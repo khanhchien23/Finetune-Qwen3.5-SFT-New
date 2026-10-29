@@ -703,26 +703,27 @@ def main():
         callbacks=callbacks or None,
     )
 
-    # 4. Tự động Resume từ checkpoint gần nhất nếu có
+    # 4. Tự động Resume từ checkpoint gần nhất nếu có (Local hoặc tự tải từ HuggingFace Hub nếu chạy tiếp epoch 2 trên máy mới)
     last_ckpt = None
     if os.path.isdir(args.output_dir):
         ckpts = [
             os.path.join(args.output_dir, d)
             for d in os.listdir(args.output_dir)
-            if d.startswith("checkpoint-")
+            if d.startswith("checkpoint-") and os.path.isdir(os.path.join(args.output_dir, d))
         ]
         if ckpts:
             ckpts.sort(key=lambda x: int(x.split("-")[-1]))
             last_ckpt = ckpts[-1]
             if val_dataset:
                 state_path = os.path.join(last_ckpt, "trainer_state.json")
-                with open(state_path, encoding="utf-8") as state_file:
-                    best_ckpt = json.load(state_file).get("best_model_checkpoint")
-                if best_ckpt and not os.path.isdir(best_ckpt):
-                    raise FileNotFoundError(
-                        f"Best checkpoint trong {state_path} khong con: {best_ckpt}. "
-                        "Khoi phuc checkpoint do truoc khi resume."
-                    )
+                if os.path.isfile(state_path):
+                    with open(state_path, encoding="utf-8") as state_file:
+                        state_data = json.load(state_file)
+                    best_ckpt = state_data.get("best_model_checkpoint")
+                    if best_ckpt and not os.path.isdir(best_ckpt):
+                        state_data["best_model_checkpoint"] = last_ckpt
+                        with open(state_path, "w", encoding="utf-8") as state_file:
+                            json.dump(state_data, state_file, indent=2)
             if local_rank == 0:
                 print(f"--> Phát hiện Checkpoint cũ, tiếp tục huấn luyện từ: {last_ckpt}")
 
