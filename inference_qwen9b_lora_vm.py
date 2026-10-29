@@ -75,13 +75,22 @@ USER_PROMPT = (
 
 def resolve_realtest_dir(data_path: Path) -> Path:
     """Resolve extracted RealTest directory or auto-extract from .zip."""
+    dir_candidates = [
+        data_path if data_path.is_dir() else data_path.with_suffix(""),
+        ROOT / "RealTest_Full_81Classes",
+        Path("/workspace/Finetune-Qwen3.5-SFT-New/RealTest_Full_81Classes"),
+        Path("/workspace/RealTest_Full_81Classes"),
+    ]
+    for d in dir_candidates:
+        if (d / "crops").is_dir():
+            return d.resolve()
+        if (d / "RealTest_Full_81Classes" / "crops").is_dir():
+            return (d / "RealTest_Full_81Classes").resolve()
+
     candidates = [
         data_path,
-        ROOT / "RealTest_Full_81Classes",
         ROOT / "RealTest_Full_81Classes.zip",
-        Path("/workspace/Finetune-Qwen3.5-SFT-New/RealTest_Full_81Classes"),
         Path("/workspace/Finetune-Qwen3.5-SFT-New/RealTest_Full_81Classes.zip"),
-        Path("/workspace/RealTest_Full_81Classes"),
         Path("/workspace/RealTest_Full_81Classes.zip"),
     ]
     chosen = None
@@ -93,12 +102,26 @@ def resolve_realtest_dir(data_path: Path) -> Path:
         raise FileNotFoundError(f"RealTest data not found at {data_path}")
 
     if chosen.is_file() and chosen.suffix.lower() == ".zip":
+        size_mb = chosen.stat().st_size / (1024 * 1024)
         extract_parent = chosen.parent
         target_dir = extract_parent / chosen.stem
         if not (target_dir / "crops").is_dir():
-            print(f"Extracting {chosen} -> {extract_parent} ...", flush=True)
-            with zipfile.ZipFile(chosen, "r") as zf:
-                zf.extractall(extract_parent)
+            print(f"Extracting {chosen} ({size_mb:.1f} MB) -> {extract_parent} ...", flush=True)
+            try:
+                with zipfile.ZipFile(chosen, "r") as zf:
+                    members = [
+                        m for m in zf.namelist()
+                        if "/crops/" in m or m.endswith("clean_81classes_full_manifest.csv")
+                    ]
+                    zf.extractall(extract_parent, members=members or None)
+            except zipfile.BadZipFile as exc:
+                head = chosen.read_bytes()[:120]
+                raise RuntimeError(
+                    f"{chosen} is not a valid/complete ZIP file (current size: {size_mb:.2f} MB; "
+                    f"expected ~1178.3 MB; first bytes: {head!r}). "
+                    f"If uploading via SCP/Jupyter/VSCode, wait until upload reaches 1178 MB. "
+                    f"If downloading from Google Drive, use `gdown --fuzzy <URL>` instead of wget/curl."
+                ) from exc
         chosen = target_dir
 
     if (chosen / "RealTest_Full_81Classes" / "crops").is_dir():
