@@ -467,6 +467,21 @@ class HubPushCallback(TrainerCallback):
         except Exception as exc:
             print(f"--> [hub] CANH BAO: day {path_in_repo} that bai: {type(exc).__name__}: {exc}")
 
+    def _push_tensorboard_runs(self, output_dir: str, step_note: str):
+        runs_dir = os.path.join(output_dir, "runs")
+        if not os.path.isdir(runs_dir):
+            return
+        try:
+            self.api.upload_folder(
+                repo_id=self.repo_id,
+                folder_path=runs_dir,
+                path_in_repo="runs",
+                commit_message=f"Update TensorBoard logs ({step_note})",
+            )
+            print(f"--> [hub] Da cap nhat TensorBoard logs -> {self.repo_id}/runs")
+        except Exception as exc:
+            print(f"--> [hub] CANH BAO: day TensorBoard logs that bai: {type(exc).__name__}: {exc}")
+
     def on_save(self, args, state, control, **kwargs):
         if not state.is_world_process_zero:
             return
@@ -474,6 +489,7 @@ class HubPushCallback(TrainerCallback):
         if os.path.isdir(folder):
             self._push(folder, f"checkpoint-{state.global_step}",
                        f"Upload checkpoint-{state.global_step}")
+        self._push_tensorboard_runs(args.output_dir, f"step-{state.global_step}")
 
     def on_end(self, args, state, control, **kwargs):
         if not state.is_world_process_zero:
@@ -481,6 +497,7 @@ class HubPushCallback(TrainerCallback):
         final_dir = os.path.join(args.output_dir, "final_adapter")
         if os.path.isdir(final_dir):
             self._push(final_dir, "final_adapter", "Upload final_adapter (complete)")
+        self._push_tensorboard_runs(args.output_dir, "complete")
 
 
 def build_model_and_processor(model_id: str, lora_r: int = 16, lora_alpha: int = 32):
@@ -600,6 +617,16 @@ def main():
         )
         data_source_str = str(jsonl_path)
 
+    tb_log_dir = os.path.join(args.output_dir, "runs")
+    os.makedirs(tb_log_dir, exist_ok=True)
+    try:
+        import tensorboard  # noqa: F401
+        report_to_target = "tensorboard"
+    except ImportError:
+        report_to_target = "none"
+        if local_rank == 0:
+            print("--> [WARN] Chua cai 'tensorboard', tam tat report_to. Chay: pip install tensorboard")
+
     if local_rank == 0:
         print("=" * 78)
         print("CẤU HÌNH DỮ LIỆU HUẤN LUYỆN SFT CoT (81 LỚP QUÂN SỰ)")
@@ -609,6 +636,7 @@ def main():
         print(f"- Số mẫu Val              : {len(val_records) if val_records else 0:,} mẫu")
         print(f"- Cắt theo BBox (Dynamic) : {args.crop_bbox}")
         print(f"- Thư mục lưu Checkpoint  : {args.output_dir}")
+        print(f"- Thư mục TensorBoard     : {tb_log_dir} (report_to={report_to_target})")
         print("=" * 78)
 
     train_dataset = MilitaryCoTSFTDataset(train_records, crop_bbox=args.crop_bbox)
@@ -627,6 +655,7 @@ def main():
     # 3. Thiết lập TrainingArguments tối ưu cho Kaggle 2x T4 / P100 (tương thích transformers v5+)
     training_args = TrainingArguments(
         output_dir=args.output_dir,
+        logging_dir=tb_log_dir,
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size,
@@ -635,6 +664,7 @@ def main():
         lr_scheduler_type="cosine",
         warmup_steps=50,
         weight_decay=0.01,
+        logging_first_step=True,
         logging_steps=10,
         save_strategy="steps",
         save_steps=args.save_steps,
@@ -651,7 +681,7 @@ def main():
         dataloader_num_workers=2,
         remove_unused_columns=False,
         ddp_find_unused_parameters=False,
-        report_to="none",
+        report_to=report_to_target,
         optim="adamw_torch",
     )
 

@@ -43,6 +43,8 @@ LORA_ALPHA="${LORA_ALPHA:-32}"
 SAVE_STEPS="${SAVE_STEPS:-200}"
 MAX_SEQ_LEN="${MAX_SEQ_LEN:-1280}"
 NUM_GPUS="${NUM_GPUS:-1}"
+TB_PORT="${TB_PORT:-6006}"
+START_TB="${START_TB:-1}"
 # TORCH_SOURCE chi dung khi chua co torch >= 2.6 + CUDA; GPU Blackwell nen cai cu130 truoc.
 TORCH_SOURCE="${TORCH_SOURCE:-CUDA_12_6}"
 
@@ -122,7 +124,7 @@ if ! "${PY}" -c "import sys, torch; v=tuple(int(x) for x in torch.__version__.sp
     esac
 fi
 pip_install -U "transformers>=4.57" accelerate peft \
-    qwen-vl-utils datasets pyarrow huggingface_hub pillow tqdm
+    qwen-vl-utils datasets pyarrow huggingface_hub pillow tqdm tensorboard
 "${PY}" -c "import torch, transformers, peft; print('  -> Env OK: torch=' + torch.__version__ + ' | cuda=' + str(torch.cuda.is_available()) + ' | transformers=' + transformers.__version__ + ' | peft=' + peft.__version__)"
 
 # cuda.is_available() va get_device_properties() van co the thanh cong khi wheel
@@ -257,6 +259,16 @@ PYPREFLIGHT
 
 echo
 echo "[3/3] Starting SFT Training (enable_thinking=True, LoRA 16-bit) on ${MODEL_ID}..."
+TB_LOG_DIR="${OUTPUT_DIR}/runs"
+mkdir -p "${TB_LOG_DIR}"
+if [ "${START_TB}" = "1" ]; then
+    pkill -f "tensorboard.*--logdir.*${TB_LOG_DIR}" >/dev/null 2>&1 || true
+    nohup "${PY}" -m tensorboard.main --logdir "${TB_LOG_DIR}" --host 0.0.0.0 --port "${TB_PORT}" > "${OUTPUT_DIR}/tensorboard.log" 2>&1 &
+    echo "  -> TensorBoard dang chay ngam tai port ${TB_PORT} (logdir: ${TB_LOG_DIR})"
+    echo "     Xem tren may ca nhan qua SSH tunnel:  ssh -N -L ${TB_PORT}:localhost:${TB_PORT} <user>@<ip-may-ao> -p <ssh-port>"
+    echo "     Sau do mo trinh duyet:                http://localhost:${TB_PORT}"
+fi
+
 TRAIN_ARGS=(
     --model_id "${MODEL_ID}"
     --parquet_dir "${LOCAL_DATA_DIR}"
