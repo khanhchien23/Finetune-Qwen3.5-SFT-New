@@ -28,9 +28,10 @@ from peft import PeftModel
 
 MODEL_ID = "Qwen/Qwen3.5-9B"
 ROOT = Path(__file__).resolve().parent
-DEFAULT_ADAPTER = ROOT / "Qwen3.5-9B-SFT-CoT-81Classes-thinking" / "checkpoint-668"
-DEFAULT_REALTEST = ROOT / "RealTest_Full_81Classes.zip"
-DEFAULT_OUTPUT = ROOT / "realtest_checkpoint668_predictions.csv"
+OUTPUT_DIR = ROOT / "Qwen3.5-9B-SFT-CoT-81Classes-thinking"
+DEFAULT_ADAPTER = OUTPUT_DIR / "checkpoint-1336"
+DEFAULT_REALTEST = ROOT / "RealTest_Full_81Classes"
+DEFAULT_OUTPUT = None
 MIN_PIXELS = 64 * 28 * 28
 MAX_PIXELS = 256 * 28 * 28
 EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
@@ -272,6 +273,32 @@ def infer_batch(paths, processor, model, max_new_tokens):
 
 
 
+def resolve_adapter_dir(adapter_arg: Path) -> Path:
+    """Resolve explicit adapter path, or latest checkpoint / final_adapter."""
+    if adapter_arg.is_dir() and (adapter_arg / "adapter_config.json").is_file():
+        return adapter_arg.resolve()
+    if (OUTPUT_DIR / adapter_arg.name / "adapter_config.json").is_file():
+        return (OUTPUT_DIR / adapter_arg.name).resolve()
+    parent = adapter_arg.parent if adapter_arg.parent.is_dir() else OUTPUT_DIR
+    if parent.is_dir():
+        ckpts = sorted(
+            (
+                d for d in parent.iterdir()
+                if d.is_dir() and d.name.startswith("checkpoint-") and d.name.split("-")[-1].isdigit()
+            ),
+            key=lambda d: int(d.name.split("-")[-1]),
+        )
+        if ckpts:
+            chosen = ckpts[-1].resolve()
+            print(f"Note: {adapter_arg} not found; using latest checkpoint {chosen}", flush=True)
+            return chosen
+        if (parent / "final_adapter" / "adapter_config.json").is_file():
+            chosen = (parent / "final_adapter").resolve()
+            print(f"Note: {adapter_arg} not found; falling back to {chosen}", flush=True)
+            return chosen
+    return adapter_arg
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path, default=DEFAULT_REALTEST)
@@ -281,12 +308,13 @@ def main():
     parser.add_argument("--max-new-tokens", type=int, default=512)
     parser.add_argument("--batch-size", type=int, default=1)
     args = parser.parse_args()
-    if not args.adapter.exists() and (args.adapter.parent / "final_adapter").is_dir():
-        print(f"Note: {args.adapter} not found; falling back to {args.adapter.parent / 'final_adapter'}", flush=True)
-        args.adapter = args.adapter.parent / "final_adapter"
+    args.adapter = resolve_adapter_dir(args.adapter)
     for filename in ("adapter_config.json", "adapter_model.safetensors"):
         if not (args.adapter / filename).is_file():
-            raise FileNotFoundError(f"Missing {args.adapter / filename}; check checkpoint-668")
+            raise FileNotFoundError(f"Missing {args.adapter / filename}")
+    if args.output is None:
+        tag = args.adapter.name.replace("-", "")
+        args.output = ROOT / f"realtest_{tag}_predictions.csv"
     data_root = resolve_realtest_dir(args.data_root)
     paths, labels = realtest_items(data_root)
     selected = paths[:args.limit] if args.limit else paths
