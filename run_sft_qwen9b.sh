@@ -6,7 +6,10 @@
 #   Step 3: Train SFT with enable_thinking=True (ThinkingDataCollator)
 #
 #   Usage:
-#     bash run_sft_qwen9b.sh                                  # 9B 16-bit, can GPU >= 20GB
+#     bash run_sft_qwen9b.sh                                  # mac dinh BATCH_SIZE=2, EPOCHS=1
+#     bash run_sft_qwen9b.sh --batch_size 4                   # chinh batch_size truc tiep qua tham so
+#     bash run_sft_qwen9b.sh --batch_size 4 --grad_accum 4    # chinh batch_size + grad_accum
+#     BATCH_SIZE=4 GRAD_ACCUM=4 bash run_sft_qwen9b.sh        # hoac qua bien moi truong
 #     NUM_GPUS=2 bash run_sft_qwen9b.sh                       # DDP qua torchrun
 #     TORCH_SOURCE=PYPI bash run_sft_qwen9b.sh                # torch tu PyPI mac dinh
 #     EPOCHS=1 LR=1e-4 bash run_sft_qwen9b.sh                 # override hyper-param
@@ -18,7 +21,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(pwd)"
 
 # ----------------------------------------------------------------------------
-# 1. CAU HINH THAM SO (moi cai co the override bang bien moi truong)
+# 1. CAU HINH THAM SO (override bang bien moi truong HOAC tham so dong lenh)
 # ----------------------------------------------------------------------------
 HF_DATASET_REPO="${HF_DATASET_REPO:-KhanhChien/Data-Qwen3.5-SFT-New}"
 LOCAL_DATA_DIR="${LOCAL_DATA_DIR:-${SCRIPT_DIR}/data_hf/Data-Qwen3.5-SFT-New}"
@@ -47,6 +50,42 @@ TB_PORT="${TB_PORT:-6006}"
 START_TB="${START_TB:-1}"
 # TORCH_SOURCE chi dung khi chua co torch >= 2.6 + CUDA; GPU Blackwell nen cai cu130 truoc.
 TORCH_SOURCE="${TORCH_SOURCE:-CUDA_12_6}"
+
+# Ho tro truyen tham so truc tiep tu dong lenh (vd: bash run_sft_qwen9b.sh --batch_size 4)
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -b|--batch_size|--batch-size)
+            BATCH_SIZE="$2"; shift 2 ;;
+        --batch_size=*|--batch-size=*)
+            BATCH_SIZE="${1#*=}"; shift 1 ;;
+        -g|--grad_accum|--grad-accum)
+            GRAD_ACCUM="$2"; shift 2 ;;
+        --grad_accum=*|--grad-accum=*)
+            GRAD_ACCUM="${1#*=}"; shift 1 ;;
+        -e|--epochs)
+            EPOCHS="$2"; shift 2 ;;
+        --epochs=*)
+            EPOCHS="${1#*=}"; shift 1 ;;
+        --lr)
+            LR="$2"; shift 2 ;;
+        --lr=*)
+            LR="${1#*=}"; shift 1 ;;
+        --save_steps|--save-steps)
+            SAVE_STEPS="$2"; shift 2 ;;
+        --max_seq_len|--max_seq_length)
+            MAX_SEQ_LEN="$2"; shift 2 ;;
+        --num_gpus|--num-gpus)
+            NUM_GPUS="$2"; shift 2 ;;
+        --hub_repo|--hub-repo)
+            HF_PUSH_REPO="$2"; shift 2 ;;
+        [0-9]*)
+            BATCH_SIZE="$1"; shift 1 ;;
+        *)
+            echo "[ERROR] Tham so khong hop le: $1"
+            echo "        Vi du: bash run_sft_qwen9b.sh --batch_size 4 --grad_accum 4 --epochs 1"
+            exit 1 ;;
+    esac
+done
 
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export HF_HUB_DISABLE_SYMLINKS_WARNING=1
@@ -110,6 +149,7 @@ echo "  MODEL_ID    = ${MODEL_ID}"
 echo "  DATA        = ${LOCAL_DATA_DIR}"
 echo "  OUTPUT_DIR  = ${OUTPUT_DIR}"
 echo "  NUM_GPUS    = ${NUM_GPUS}"
+echo "  BATCH_SIZE  = ${BATCH_SIZE} (GRAD_ACCUM = ${GRAD_ACCUM}, EPOCHS = ${EPOCHS}, LR = ${LR})"
 echo "=============================================================================="
 
 echo
