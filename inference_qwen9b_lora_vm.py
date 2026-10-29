@@ -8,9 +8,11 @@ Results are appended per batch; rerunning automatically resumes completed rows.
 import argparse
 import csv
 import re
+import struct
 import sys
 import time
 import zipfile
+import zlib
 from pathlib import Path
 
 # Match the training script's torchao / PEFT compatibility workaround.
@@ -73,6 +75,57 @@ USER_PROMPT = (
 )
 
 
+def recover_from_partial_zip(zip_path: Path, extract_parent: Path) -> int:
+    """Stream-extract crops/ and manifest from local ZIP headers even if EOF is truncated."""
+    with zip_path.open("rb") as f:
+        data = f.read(380 * 1024 * 1024)
+    pos = 0
+    extracted = 0
+    while True:
+        idx = data.find(b"PK\x03\x04", pos)
+        if idx < 0 or idx + 30 > len(data):
+            break
+        _, _, _, comp, _, _, _, csize, _, fnlen, exlen = struct.unpack(
+            "<4sHHHHHIIIHH", data[idx : idx + 30]
+        )
+        fn_start = idx + 30
+        fn_end = fn_start + fnlen
+        try:
+            fn = data[fn_start:fn_end].decode("utf-8")
+        except UnicodeDecodeError:
+            pos = idx + 4
+            continue
+        data_start = fn_end + exlen
+        wanted = fn.endswith("clean_81classes_full_manifest.csv") or (
+            "/crops/" in fn and not fn.endswith("/")
+        )
+        if wanted:
+            if comp == 0:
+                payload = data[data_start : data_start + csize]
+                consumed = csize
+            elif comp == 8:
+                dobj = zlib.decompressobj(-15)
+                chunk = data[data_start : data_start + 16 * 1024 * 1024]
+                payload = dobj.decompress(chunk)
+                consumed = len(chunk) - len(dobj.unused_data)
+            else:
+                pos = data_start
+                continue
+            out_path = extract_parent / fn
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(payload)
+            extracted += 1
+            pos = data_start + consumed
+        else:
+            pos = data_start
+    return extracted
+
+
+def _has_complete_crops(d: Path) -> bool:
+    crops = d / "crops"
+    return crops.is_dir() and sum(1 for p in crops.iterdir() if p.is_file()) >= 1765
+
+
 def resolve_realtest_dir(data_path: Path) -> Path:
     """Resolve extracted RealTest directory or auto-extract from .zip."""
     dir_candidates = [
@@ -82,9 +135,9 @@ def resolve_realtest_dir(data_path: Path) -> Path:
         Path("/workspace/RealTest_Full_81Classes"),
     ]
     for d in dir_candidates:
-        if (d / "crops").is_dir():
+        if _has_complete_crops(d):
             return d.resolve()
-        if (d / "RealTest_Full_81Classes" / "crops").is_dir():
+        if _has_complete_crops(d / "RealTest_Full_81Classes"):
             return (d / "RealTest_Full_81Classes").resolve()
 
     candidates = [
@@ -105,7 +158,7 @@ def resolve_realtest_dir(data_path: Path) -> Path:
         size_mb = chosen.stat().st_size / (1024 * 1024)
         extract_parent = chosen.parent
         target_dir = extract_parent / chosen.stem
-        if not (target_dir / "crops").is_dir():
+        if not _has_complete_crops(target_dir):
             print(f"Extracting {chosen} ({size_mb:.1f} MB) -> {extract_parent} ...", flush=True)
             try:
                 with zipfile.ZipFile(chosen, "r") as zf:
@@ -114,17 +167,17 @@ def resolve_realtest_dir(data_path: Path) -> Path:
                         if "/crops/" in m or m.endswith("clean_81classes_full_manifest.csv")
                     ]
                     zf.extractall(extract_parent, members=members or None)
-            except zipfile.BadZipFile as exc:
-                head = chosen.read_bytes()[:120]
-                raise RuntimeError(
-                    f"{chosen} is not a valid/complete ZIP file (current size: {size_mb:.2f} MB; "
-                    f"expected ~1178.3 MB; first bytes: {head!r}). "
-                    f"If uploading via SCP/Jupyter/VSCode, wait until upload reaches 1178 MB. "
-                    f"If downloading from Google Drive, use `gdown --fuzzy <URL>` instead of wget/curl."
-                ) from exc
+            except zipfile.BadZipFile:
+                print(
+                    f"Note: {chosen.name} is truncated at {size_mb:.1f} MB; "
+                    f"recovering crops/ and manifest from local ZIP stream headers...",
+                    flush=True,
+                )
+                count = recover_from_partial_zip(chosen, extract_parent)
+                print(f"Recovered {count} files into {target_dir}", flush=True)
         chosen = target_dir
 
-    if (chosen / "RealTest_Full_81Classes" / "crops").is_dir():
+    if _has_complete_crops(chosen / "RealTest_Full_81Classes"):
         chosen = chosen / "RealTest_Full_81Classes"
     return chosen
 
