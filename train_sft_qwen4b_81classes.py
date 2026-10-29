@@ -619,6 +619,7 @@ def main():
 
     tb_log_dir = os.path.join(args.output_dir, "runs")
     os.makedirs(tb_log_dir, exist_ok=True)
+    os.environ["TENSORBOARD_LOGGING_DIR"] = tb_log_dir
     try:
         import tensorboard  # noqa: F401
         report_to_target = "tensorboard"
@@ -652,8 +653,9 @@ def main():
     # Kiểm tra template/masking ngay trước khi khởi chạy vòng lặp train.
     collator([train_dataset[0]])
 
-    # 3. Thiết lập TrainingArguments tối ưu cho Kaggle 2x T4 / P100 (tương thích transformers v5+)
-    training_args = TrainingArguments(
+    # 3. Thiết lập TrainingArguments tối ưu cho Kaggle 2x T4 / P100 (tương thích transformers v4 & v5+)
+    import inspect
+    ta_kwargs = dict(
         output_dir=args.output_dir,
         logging_dir=tb_log_dir,
         num_train_epochs=args.epochs,
@@ -684,6 +686,11 @@ def main():
         report_to=report_to_target,
         optim="adamw_torch",
     )
+    supported_ta_params = set(inspect.signature(TrainingArguments.__init__).parameters)
+    if "eval_strategy" not in supported_ta_params and "evaluation_strategy" in supported_ta_params:
+        ta_kwargs["evaluation_strategy"] = ta_kwargs.pop("eval_strategy")
+    ta_kwargs = {k: v for k, v in ta_kwargs.items() if k in supported_ta_params}
+    training_args = TrainingArguments(**ta_kwargs)
 
     callbacks = []
     if args.hub_repo and local_rank == 0:
