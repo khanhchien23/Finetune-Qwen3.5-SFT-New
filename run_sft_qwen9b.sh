@@ -34,7 +34,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-${SCRIPT_DIR}/$(basename "${MODEL_ID}")-SFT-CoT-81Clas
 # Tat bang cach:  HF_PUSH_REPO="" bash run_sft_qwen9b.sh
 # Mo repo cong khai:  HF_REPO_PUBLIC=1 bash run_sft_qwen9b.sh
 # Can token:  export HF_TOKEN=hf_xxx   (hoac: huggingface-cli login)
-HF_PUSH_REPO="${HF_PUSH_REPO-KhanhChien/FineTuneQwen35-9B}"
+HF_PUSH_REPO="${HF_PUSH_REPO-KhanhChien/FineTuneQwen35-9B-New}"
 HF_REPO_PUBLIC="${HF_REPO_PUBLIC:-0}"
 
 EPOCHS="${EPOCHS:-1}"

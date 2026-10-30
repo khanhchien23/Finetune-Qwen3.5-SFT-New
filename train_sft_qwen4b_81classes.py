@@ -710,29 +710,56 @@ def main():
         callbacks=callbacks or None,
     )
 
-    # 4. Tự động Resume từ checkpoint gần nhất nếu có (Local hoặc tự tải từ HuggingFace Hub nếu chạy tiếp epoch 2 trên máy mới)
+    # 4. Tự động Resume từ checkpoint gần nhất (Local hoặc tự tải từ HuggingFace Hub trên máy ảo mới)
     last_ckpt = None
-    if os.path.isdir(args.output_dir):
-        ckpts = [
-            os.path.join(args.output_dir, d)
-            for d in os.listdir(args.output_dir)
-            if d.startswith("checkpoint-") and os.path.isdir(os.path.join(args.output_dir, d))
-        ]
-        if ckpts:
-            ckpts.sort(key=lambda x: int(x.split("-")[-1]))
-            last_ckpt = ckpts[-1]
-            if val_dataset:
-                state_path = os.path.join(last_ckpt, "trainer_state.json")
-                if os.path.isfile(state_path):
-                    with open(state_path, encoding="utf-8") as state_file:
-                        state_data = json.load(state_file)
-                    best_ckpt = state_data.get("best_model_checkpoint")
-                    if best_ckpt and not os.path.isdir(best_ckpt):
-                        state_data["best_model_checkpoint"] = last_ckpt
-                        with open(state_path, "w", encoding="utf-8") as state_file:
-                            json.dump(state_data, state_file, indent=2)
-            if local_rank == 0:
-                print(f"--> Phát hiện Checkpoint cũ, tiếp tục huấn luyện từ: {last_ckpt}")
+    os.makedirs(args.output_dir, exist_ok=True)
+    ckpts = [
+        os.path.join(args.output_dir, d)
+        for d in os.listdir(args.output_dir)
+        if d.startswith("checkpoint-") and os.path.isdir(os.path.join(args.output_dir, d))
+    ]
+    if not ckpts and args.hub_repo and local_rank == 0:
+        try:
+            from huggingface_hub import HfApi, snapshot_download
+            repo_files = HfApi().list_repo_files(repo_id=args.hub_repo)
+            remote_steps = sorted({
+                int(f.split("/")[0].split("-")[1])
+                for f in repo_files
+                if f.startswith("checkpoint-") and "/" in f and f.split("/")[0].split("-")[1].isdigit()
+            })
+            if remote_steps:
+                latest_name = f"checkpoint-{remote_steps[-1]}"
+                print(f"--> [hub] Phát hiện {latest_name} trên HuggingFace ({args.hub_repo}), đang tải về máy mới...")
+                snapshot_download(
+                    repo_id=args.hub_repo,
+                    allow_patterns=[f"{latest_name}/*", "runs/*"],
+                    local_dir=args.output_dir,
+                )
+                print(f"--> [hub] Đã tải xong {latest_name} và TensorBoard runs về: {args.output_dir}")
+        except Exception as exc:
+            print(f"--> [hub] CANH BAO: Không tải được checkpoint từ '{args.hub_repo}': {type(exc).__name__}: {exc}")
+    if torch.distributed.is_initialized():
+        torch.distributed.barrier()
+    ckpts = [
+        os.path.join(args.output_dir, d)
+        for d in os.listdir(args.output_dir)
+        if d.startswith("checkpoint-") and os.path.isdir(os.path.join(args.output_dir, d))
+    ]
+    if ckpts:
+        ckpts.sort(key=lambda x: int(x.split("-")[-1]))
+        last_ckpt = ckpts[-1]
+        if val_dataset:
+            state_path = os.path.join(last_ckpt, "trainer_state.json")
+            if os.path.isfile(state_path):
+                with open(state_path, encoding="utf-8") as state_file:
+                    state_data = json.load(state_file)
+                best_ckpt = state_data.get("best_model_checkpoint")
+                if best_ckpt and not os.path.isdir(best_ckpt):
+                    state_data["best_model_checkpoint"] = last_ckpt
+                    with open(state_path, "w", encoding="utf-8") as state_file:
+                        json.dump(state_data, state_file, indent=2)
+        if local_rank == 0:
+            print(f"--> Phát hiện Checkpoint cũ, tiếp tục huấn luyện từ: {last_ckpt}")
 
     trainer.train(resume_from_checkpoint=last_ckpt)
     if val_dataset and local_rank == 0:

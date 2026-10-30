@@ -29,7 +29,7 @@ from peft import PeftModel
 MODEL_ID = "Qwen/Qwen3.5-9B"
 ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = ROOT / "Qwen3.5-9B-SFT-CoT-81Classes-thinking"
-DEFAULT_ADAPTER = OUTPUT_DIR / "checkpoint-1336"
+DEFAULT_ADAPTER = OUTPUT_DIR / "checkpoint-2004"
 DEFAULT_REALTEST = ROOT / "RealTest_Full_81Classes"
 DEFAULT_OUTPUT = None
 MIN_PIXELS = 64 * 28 * 28
