@@ -346,8 +346,8 @@ def main():
                         help="0 = Không giới hạn, chạy hết toàn bộ bộ dữ liệu; >0 nếu muốn dừng sớm theo step")
     parser.add_argument("--num_generations", type=int, default=4,
                         help="Số lượng câu trả lời G sinh ra cho mỗi ảnh (mặc định G=4)")
-    parser.add_argument("--batch_size", type=int, default=4,
-                        help="Số lượng ảnh xử lý song song trong 1 lượt rollout (mặc định B=4 -> sinh 4x4=16 câu cùng lúc)")
+    parser.add_argument("--batch_size", type=int, default=8,
+                        help="Số lượng ảnh xử lý song song trong 1 lượt rollout (mặc định B=8 -> sinh 8x4=32 câu cùng lúc)")
     parser.add_argument("--grad_accum", type=int, default=8,
                         help="Số ảnh có phương sai > 0 tích lũy gradient cho 1 bước cập nhật")
     parser.add_argument("--lr", type=float, default=5e-6)
@@ -356,7 +356,7 @@ def main():
     parser.add_argument("--w_fmt", type=float, default=0.2, help="Trọng số nhánh Format sau khi chuẩn hóa tách rời")
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--max_new_tokens", type=int, default=384)
-    parser.add_argument("--save_steps", type=int, default=100)
+    parser.add_argument("--save_steps", type=int, default=50)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--wandb_project", type=str, default="Qwen35-9B-RL-81Classes",
                         help="Tên project trên WandB để vẽ chung biểu đồ so sánh GRPO vs GDPO")
@@ -420,11 +420,11 @@ def main():
     base_model = AutoModelForImageTextToText.from_pretrained(
         args.model_id,
         dtype=dtype,
+        attn_implementation="sdpa",
         device_map={"": 0},
         trust_remote_code=True,
     )
-    if vram_gb < 70.0:
-        base_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    base_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     base_model.enable_input_require_grads()
 
     model = PeftModel.from_pretrained(
