@@ -35,6 +35,7 @@ gdpo_image = (
         "pillow",
         "tqdm",
         "tensorboard",
+        "wandb",
     )
     .add_local_file(
         Path(__file__).parent / "train_gdpo_qwen9b_81classes.py",

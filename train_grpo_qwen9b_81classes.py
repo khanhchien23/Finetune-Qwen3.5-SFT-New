@@ -51,6 +51,12 @@ try:
 except ImportError:
     HAS_TB = False
 
+try:
+    import wandb
+    HAS_WANDB = True
+except ImportError:
+    HAS_WANDB = False
+
 
 # ==============================================================================
 # 1. DANH SÁCH 81 LỚP CHUẨN & SYSTEM/USER PROMPT (KHỚP 100% VỚI SFT & INFERENCE)
@@ -320,6 +326,11 @@ def main():
     parser.add_argument("--max_new_tokens", type=int, default=384)
     parser.add_argument("--save_steps", type=int, default=50)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--wandb_project", type=str, default="Qwen35-9B-RL-81Classes",
+                        help="Tên project trên WandB để vẽ chung biểu đồ so sánh GRPO vs GDPO")
+    parser.add_argument("--wandb_run_name", type=str, default="GRPO-ckpt2004",
+                        help="Tên run hiển thị trên WandB")
+    parser.add_argument("--no_wandb", action="store_true", help="Tắt logging lên WandB")
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -332,9 +343,20 @@ def main():
     dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    runs_dir = out_dir / "runs"
+    runs_dir = out_dir / "runs" / args.wandb_run_name
     runs_dir.mkdir(parents=True, exist_ok=True)
     tb_writer = SummaryWriter(log_dir=str(runs_dir)) if HAS_TB else None
+
+    use_wandb = HAS_WANDB and (not args.no_wandb) and bool(os.environ.get("WANDB_API_KEY"))
+    if use_wandb:
+        wandb.init(
+            project=args.wandb_project,
+            name=args.wandb_run_name,
+            config=vars(args),
+        )
+        print(f"--> [WandB] Đã bật theo dõi trực tiếp tại project: {args.wandb_project} ({args.wandb_run_name})", flush=True)
+    else:
+        print(f"--> [TensorBoard] Đang ghi log tại: {runs_dir} (Đặt biến môi trường WANDB_API_KEY nếu muốn bật thêm WandB)", flush=True)
 
     # 1. Tải SFT checkpoint-2004
     sft_adapter_dir = resolve_sft_checkpoint(
@@ -402,6 +424,7 @@ def main():
         step_kl_sum = 0.0
         step_reward_sum = 0.0
         step_acc_sum = 0.0
+        step_fmt_sum = 0.0
         valid_groups = 0
         attempts_in_step = 0
 
@@ -446,11 +469,13 @@ def main():
             decoded_list = processor.batch_decode(comp_ids, skip_special_tokens=False)
             rewards = []
             accs = []
+            fmts = []
             for text in decoded_list:
                 full_completion = "<think>\n" + text
                 r_total, r_info = compute_grpo_reward(full_completion, gt_class)
                 rewards.append(r_total)
                 accs.append(r_info["acc"])
+                fmts.append(r_info["format"])
 
             rewards_t = torch.tensor(rewards, dtype=torch.float32, device=device)
             mean_r = rewards_t.mean()
@@ -458,6 +483,7 @@ def main():
 
             step_reward_sum += mean_r.item()
             step_acc_sum += sum(accs) / len(accs)
+            step_fmt_sum += sum(fmts) / len(fmts)
 
             # Nếu cả G mẫu đều đúng y hệt nhau (std quá nhỏ) -> advantage = 0, bỏ qua backward
             if std_r.item() < 1e-4:
@@ -526,22 +552,32 @@ def main():
         avg_kl = step_kl_sum / max(1, valid_groups)
         avg_reward = step_reward_sum / max(1, attempts_in_step)
         avg_acc = step_acc_sum / max(1, attempts_in_step)
+        avg_fmt = step_fmt_sum / max(1, attempts_in_step)
+        skipped_groups = attempts_in_step - valid_groups
         cur_lr = scheduler.get_last_lr()[0]
 
         print(
-            f"[Step {global_step}/{args.max_steps}] "
-            f"reward={avg_reward:.3f} | rollout_acc={avg_acc:.2%} | "
+            f"[GRPO Step {global_step}/{args.max_steps}] "
+            f"reward={avg_reward:.3f} | rollout_acc={avg_acc:.2%} | format_ok={avg_fmt:.2%} | "
             f"loss={avg_loss:.4f} | kl={avg_kl:.4f} | lr={cur_lr:.2e}",
             flush=True,
         )
 
+        metrics = {
+            "reward/total_mean": avg_reward,
+            "reward/accuracy_rate": avg_acc,
+            "reward/format_ok_rate": avg_fmt,
+            "train/loss": avg_loss,
+            "train/kl_divergence": avg_kl,
+            "train/learning_rate": cur_lr,
+            "train/skipped_easy_groups": skipped_groups,
+        }
         if tb_writer is not None:
-            tb_writer.add_scalar("grpo/reward_mean", avg_reward, global_step)
-            tb_writer.add_scalar("grpo/rollout_accuracy", avg_acc, global_step)
-            tb_writer.add_scalar("grpo/loss", avg_loss, global_step)
-            tb_writer.add_scalar("grpo/kl_div", avg_kl, global_step)
-            tb_writer.add_scalar("grpo/lr", cur_lr, global_step)
+            for k, v in metrics.items():
+                tb_writer.add_scalar(k, v, global_step)
             tb_writer.flush()
+        if use_wandb:
+            wandb.log(metrics, step=global_step)
 
         if global_step % args.save_steps == 0 or global_step == args.max_steps:
             ckpt_name = f"checkpoint-grpo-{global_step}"
@@ -565,6 +601,8 @@ def main():
     pbar.close()
     if tb_writer is not None:
         tb_writer.close()
+    if use_wandb:
+        wandb.finish()
     print(f"=== HOÀN TẤT HUẤN LUYỆN GRPO ({args.max_steps} STEPS) ===", flush=True)
 
 

@@ -41,6 +41,7 @@ grpo_image = (
         "pillow",
         "tqdm",
         "tensorboard",
+        "wandb",
     )
     # Đóng gói trực tiếp file train_grpo_qwen9b_81classes.py vào trong container
     .add_local_file(

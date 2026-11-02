@@ -27,7 +27,7 @@ KL_BETA="${KL_BETA:-0.02}"
 
 echo "[1/3] Cài đặt các thư viện cần thiết..."
 pip install -q -U "transformers>=4.57.0" "accelerate>=1.2.0" "peft>=0.14.0" \
-    qwen-vl-utils datasets pyarrow "huggingface_hub[hf_transfer]" pillow tqdm tensorboard
+    qwen-vl-utils datasets pyarrow "huggingface_hub[hf_transfer]" pillow tqdm tensorboard wandb
 
 echo "[2/3] Tải repo Dataset Parquet (${HF_DATASET_REPO}) về ${LOCAL_DATA_DIR}..."
 python3 - <<PYEOF
