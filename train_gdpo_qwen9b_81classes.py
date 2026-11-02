@@ -484,7 +484,7 @@ def main():
             # --- BƯỚC A: ROLLOUT G CÂU TRẢ LỜI TỪ POLICY HIỆN TẠI ---
             model.eval()
             model.set_adapter("policy")
-            with torch.inference_mode():
+            with torch.no_grad():
                 gen_ids = model.generate(
                     **prompt_inputs,
                     max_new_tokens=args.max_new_tokens,
@@ -494,7 +494,7 @@ def main():
                     num_return_sequences=args.num_generations,
                     pad_token_id=pad_token_id,
                     eos_token_id=eos_token_id,
-                )
+                ).clone()
 
             comp_ids = gen_ids[:, prompt_len:]
             decoded_list = processor.batch_decode(comp_ids, skip_special_tokens=False)
@@ -527,7 +527,7 @@ def main():
 
             # --- BƯỚC B: TÍNH LOGP CỦA REFERENCE MODEL (checkpoint-2004 gốc) ---
             prompt_mm_ids = prompt_inputs.get("mm_token_type_ids")
-            with torch.inference_mode():
+            with torch.no_grad():
                 model.set_adapter("ref")
                 ref_logps, comp_mask = compute_completion_logprobs(
                     model,
