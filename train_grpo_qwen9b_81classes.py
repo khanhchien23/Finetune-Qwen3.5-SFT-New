@@ -242,6 +242,7 @@ def compute_completion_logprobs(
     pixel_values: torch.Tensor,
     image_grid_thw: torch.Tensor,
     prompt_len: int,
+    prompt_mm_token_type_ids: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Tính log-probability của từng token trong phần completion (từ vị trí `prompt_len` trở đi).
@@ -250,9 +251,22 @@ def compute_completion_logprobs(
       - per_token_logps: [G, L - prompt_len]
       - completion_mask: [G, L - prompt_len] (1 ở các token thật, 0 ở padding sau EOS)
     """
-    G = input_ids.size(0)
+    G, total_len = input_ids.shape
+    comp_len = total_len - prompt_len
     pv_expanded = pixel_values.repeat(G, *([1] * (pixel_values.dim() - 1)))
     thw_expanded = image_grid_thw.repeat(G, 1)
+
+    extra_kwargs: Dict[str, Any] = {}
+    if prompt_mm_token_type_ids is not None:
+        # Các token sinh ra ở phần completion đều là text (mm_token_type_id = 0)
+        mm_zeros = torch.zeros(
+            (G, comp_len),
+            dtype=prompt_mm_token_type_ids.dtype,
+            device=prompt_mm_token_type_ids.device,
+        )
+        extra_kwargs["mm_token_type_ids"] = torch.cat(
+            [prompt_mm_token_type_ids.repeat(G, 1), mm_zeros], dim=1
+        )
 
     outputs = model(
         input_ids=input_ids,
@@ -260,6 +274,7 @@ def compute_completion_logprobs(
         pixel_values=pv_expanded,
         image_grid_thw=thw_expanded,
         use_cache=False,
+        **extra_kwargs,
     )
     completion_logits = outputs.logits[:, prompt_len - 1 : -1, :]  # [G, C, V]
     completion_ids = input_ids[:, prompt_len:]                     # [G, C]
@@ -505,6 +520,7 @@ def main():
                         attn_mask[i, first_eos + 1 :] = 0
 
             # --- BƯỚC B: TÍNH LOGP CỦA REFERENCE MODEL (checkpoint-2004 gốc) ---
+            prompt_mm_ids = prompt_inputs.get("mm_token_type_ids")
             with torch.inference_mode():
                 model.set_adapter("ref")
                 ref_logps, comp_mask = compute_completion_logprobs(
@@ -514,6 +530,7 @@ def main():
                     prompt_inputs["pixel_values"],
                     prompt_inputs["image_grid_thw"],
                     prompt_len,
+                    prompt_mm_token_type_ids=prompt_mm_ids,
                 )
 
             # --- BƯỚC C: TÍNH LOGP CỦA POLICY MODEL & GRPO LOSS ---
@@ -526,6 +543,7 @@ def main():
                 prompt_inputs["pixel_values"],
                 prompt_inputs["image_grid_thw"],
                 prompt_len,
+                prompt_mm_token_type_ids=prompt_mm_ids,
             )
 
             log_ratio = ref_logps.detach() - policy_logps
