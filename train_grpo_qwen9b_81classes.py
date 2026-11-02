@@ -329,8 +329,8 @@ def main():
                         help="0 = Không giới hạn, chạy hết toàn bộ bộ dữ liệu; >0 nếu muốn dừng sớm theo step")
     parser.add_argument("--num_generations", type=int, default=4,
                         help="Số lượng câu trả lời G sinh ra cho mỗi ảnh (mặc định G=4)")
-    parser.add_argument("--batch_size", type=int, default=8,
-                        help="Số lượng ảnh xử lý song song trong 1 lượt rollout (mặc định B=8 -> sinh 8x4=32 câu cùng lúc)")
+    parser.add_argument("--batch_size", type=int, default=16,
+                        help="Số lượng ảnh xử lý song song trong 1 lượt rollout (mặc định B=16 -> sinh 16x4=64 câu cùng lúc)")
     parser.add_argument("--grad_accum", type=int, default=8,
                         help="Số ảnh có phương sai > 0 tích lũy gradient cho 1 bước cập nhật")
     parser.add_argument("--lr", type=float, default=5e-6,
@@ -409,7 +409,9 @@ def main():
         device_map={"": 0},
         trust_remote_code=True,
     )
-    base_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    # Trên H100 80GB / H200 141GB: TẮT gradient_checkpointing để dùng tối đa ~72GB VRAM lưu activations -> backward nhanh gấp ~1.6x!
+    if vram_gb < 70.0:
+        base_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     base_model.enable_input_require_grads()
 
     # Nạp adapter "policy" (trainable) VÀ adapter "ref" (đóng băng ở checkpoint-2004 để tính KL)
