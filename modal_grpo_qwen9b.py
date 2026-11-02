@@ -91,7 +91,7 @@ def run_grpo_on_modal(
     os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
 
     # 1. Tự động clone / pull repo code từ GitHub về ổ đĩa Modal (/data/code)
-    github_repo = "https://github.com/khanhchien223/Finetune-Qwen3.5-SFT-New.git"
+    github_repo = "https://github.com/khanhchien23/Finetune-Qwen3.5-SFT-New.git"
     code_dir = Path("/data/code/Finetune-Qwen3.5-SFT-New")
     code_dir.parent.mkdir(parents=True, exist_ok=True)
     if (code_dir / ".git").is_dir():
