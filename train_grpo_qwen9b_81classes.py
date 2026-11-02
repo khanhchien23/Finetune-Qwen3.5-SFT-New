@@ -116,52 +116,35 @@ def extract_think(raw_text: str) -> str:
 
 def compute_grpo_reward(raw_completion: str, gt_class: str) -> Tuple[float, Dict[str, float]]:
     """
-    Tính điểm thưởng tổng hợp cho một completion `raw_completion` (bắt đầu từ `<think>\n...`).
-    Trả về (total_reward, reward_breakdown_dict).
+    Chỉ giữ đúng 2 hàm Reward tinh gọn (Format + Exact Accuracy) vì mô hình đã qua SFT:
+      1. R_acc    (0.0 hoặc 1.0): Nhãn trong <answer>...</answer> khớp chính xác `gt_class`.
+      2. R_format (0.0 hoặc 1.0): Đóng thẻ </think> trước khi mở <answer>Exact_Class</answer>
+                                  và nội dung trong <think> không rỗng.
+    Trong GRPO chuẩn:
+      r_i = w_acc * R_acc + w_format * R_format  (với w_acc = 1.0, w_format = 0.2)
     """
     pred = extract_answer(raw_completion)
     think_body = extract_think(raw_completion)
 
-    # 1. Format Reward (+0.4 nếu đúng chuẩn <think>...</think>\n<answer>...</answer>)
-    has_closed_think = "</think>" in raw_completion
+    # 1. Format Reward (0.0 hoặc 1.0)
+    has_closed_think = "</think>" in raw_completion and len(think_body) > 10
     has_closed_answer = bool(re.search(r"<answer>\s*[^\s<>]+\s*</answer>", raw_completion))
     valid_order = False
     if has_closed_think and has_closed_answer:
         valid_order = raw_completion.find("</think>") < raw_completion.find("<answer>")
-    r_format = 0.4 if valid_order else (-0.5 if not has_closed_answer else 0.1)
+    r_format = 1.0 if valid_order else 0.0
 
-    # 2. Reasoning Steps Reward (+0.3 nếu có đủ cấu trúc 4 bước suy luận và độ dài hợp lý)
-    r_steps = 0.0
-    if think_body:
-        step_markers = sum(1 for k in ("1.", "2.", "3.", "4.") if k in think_body)
-        r_steps += 0.05 * step_markers  # tối đa +0.20 cho 4 bước
-        word_cnt = len(think_body.split())
-        if 40 <= word_cnt <= 260:
-            r_steps += 0.10
-        elif word_cnt > 350:
-            r_steps -= 0.15  # phạt suy luận lan man
-
-    # 3. Domain & Valid-Class Reward (+0.3)
-    r_domain = 0.0
-    pred_cf = pred.casefold()
+    # 2. Exact Accuracy Reward (0.0 hoặc 1.0)
+    pred_cf = pred.strip().casefold()
     gt_cf = gt_class.strip().casefold()
-    if pred_cf in VALID_CLASS_SET:
-        r_domain += 0.10  # nằm trong 81 lớp hợp lệ
-        pred_prefix = pred.split(".")[0].casefold()
-        gt_prefix = gt_class.split(".")[0].casefold()
-        if pred_prefix == gt_prefix:
-            r_domain += 0.20  # đúng miền Air / Grd / Sea
+    r_acc = 1.0 if (pred_cf and pred_cf == gt_cf) else 0.0
 
-    # 4. Exact Accuracy Reward (+2.0 nếu đúng chính xác lớp mục tiêu)
-    r_acc = 2.0 if (pred_cf and pred_cf == gt_cf) else 0.0
-
-    total = r_format + r_steps + r_domain + r_acc
+    # Tổng điểm GRPO kết hợp tuyến tính trước khi chuẩn hóa nhóm
+    total = 1.0 * r_acc + 0.2 * r_format
     return total, {
         "total": total,
-        "acc": 1.0 if r_acc > 0 else 0.0,
+        "acc": r_acc,
         "format": r_format,
-        "domain": r_domain,
-        "steps": r_steps,
     }
 
 
