@@ -265,13 +265,9 @@ def compute_completion_logprobs(
     completion_ids = input_ids[:, prompt_len:]                     # [G, C]
     completion_mask = attention_mask[:, prompt_len:].float()       # [G, C]
 
-    per_token_logps = []
-    for i in range(G):
-        row_logits = completion_logits[i].float()  # [C, V]
-        row_logps = F.log_softmax(row_logits, dim=-1)
-        gathered = torch.gather(row_logps, dim=-1, index=completion_ids[i].unsqueeze(-1)).squeeze(-1)
-        per_token_logps.append(gathered)
-    per_token_logps = torch.stack(per_token_logps, dim=0)  # [G, C]
+    # Với G=4 trên GPU 40GB-48GB VRAM, tính log_softmax vector hóa toàn batch [G, C, V] để tăng tốc tối đa
+    log_probs = F.log_softmax(completion_logits.float(), dim=-1)
+    per_token_logps = torch.gather(log_probs, dim=-1, index=completion_ids.unsqueeze(-1)).squeeze(-1)  # [G, C]
     return per_token_logps, completion_mask
 
 
@@ -316,8 +312,8 @@ def main():
                         help="Số epoch duyệt qua toàn bộ tập dữ liệu (mặc định: 1 epoch = toàn bộ dataset)")
     parser.add_argument("--max_steps", type=int, default=0,
                         help="0 = Không giới hạn, chạy hết toàn bộ bộ dữ liệu; >0 nếu muốn dừng sớm theo step")
-    parser.add_argument("--num_generations", type=int, default=6,
-                        help="Số lượng câu trả lời G sinh ra cho mỗi ảnh (G=6 tối ưu cho GPU 48GB VRAM)")
+    parser.add_argument("--num_generations", type=int, default=4,
+                        help="Số lượng câu trả lời G sinh ra cho mỗi ảnh (mặc định G=4)")
     parser.add_argument("--grad_accum", type=int, default=8,
                         help="Số ảnh có phương sai > 0 tích lũy gradient cho 1 bước cập nhật")
     parser.add_argument("--lr", type=float, default=5e-6,
