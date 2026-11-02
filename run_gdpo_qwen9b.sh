@@ -17,6 +17,7 @@ HF_PUSH_REPO="${HF_PUSH_REPO:-KhanhChien/GDPO-Qwen35-9B-New}"
 EPOCHS="${EPOCHS:-1}"
 MAX_STEPS="${MAX_STEPS:-0}"
 SAVE_STEPS="${SAVE_STEPS:-100}"
+BATCH_SIZE="${BATCH_SIZE:-4}"
 NUM_GEN="${NUM_GEN:-4}"
 GRAD_ACCUM="${GRAD_ACCUM:-8}"
 LR="${LR:-5e-6}"
@@ -24,7 +25,7 @@ KL_BETA="${KL_BETA:-0.02}"
 
 echo "[1/3] Cài đặt các thư viện cần thiết..."
 pip install -q -U "transformers>=4.57.0" "accelerate>=1.2.0" "peft>=0.14.0" \
-    qwen-vl-utils datasets pyarrow "huggingface_hub[hf_transfer]" pillow tqdm tensorboard wandb
+    qwen-vl-utils datasets pyarrow "huggingface_hub[hf_transfer]" pillow tqdm tensorboard wandb flash-linear-attention
 
 echo "[2/3] Tải repo Dataset Parquet (${HF_DATASET_REPO}) về ${LOCAL_DATA_DIR}..."
 python3 - <<PYEOF
@@ -57,6 +58,7 @@ python3 "${SCRIPT_DIR}/train_gdpo_qwen9b_81classes.py" \
     --epochs "${EPOCHS}" \
     --max_steps "${MAX_STEPS}" \
     --save_steps "${SAVE_STEPS}" \
+    --batch_size "${BATCH_SIZE}" \
     --num_generations "${NUM_GEN}" \
     --grad_accum "${GRAD_ACCUM}" \
     --lr "${LR}" \

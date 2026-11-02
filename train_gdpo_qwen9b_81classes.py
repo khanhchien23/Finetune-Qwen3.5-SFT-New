@@ -346,6 +346,8 @@ def main():
                         help="0 = Không giới hạn, chạy hết toàn bộ bộ dữ liệu; >0 nếu muốn dừng sớm theo step")
     parser.add_argument("--num_generations", type=int, default=4,
                         help="Số lượng câu trả lời G sinh ra cho mỗi ảnh (mặc định G=4)")
+    parser.add_argument("--batch_size", type=int, default=4,
+                        help="Số lượng ảnh xử lý song song trong 1 lượt rollout (mặc định B=4 -> sinh 4x4=16 câu cùng lúc)")
     parser.add_argument("--grad_accum", type=int, default=8,
                         help="Số ảnh có phương sai > 0 tích lũy gradient cho 1 bước cập nhật")
     parser.add_argument("--lr", type=float, default=5e-6)
@@ -353,7 +355,7 @@ def main():
     parser.add_argument("--w_acc", type=float, default=1.0, help="Trọng số nhánh Accuracy sau khi chuẩn hóa tách rời")
     parser.add_argument("--w_fmt", type=float, default=0.2, help="Trọng số nhánh Format sau khi chuẩn hóa tách rời")
     parser.add_argument("--temperature", type=float, default=0.8)
-    parser.add_argument("--max_new_tokens", type=int, default=384)
+    parser.add_argument("--max_new_tokens", type=int, default=256)
     parser.add_argument("--save_steps", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--wandb_project", type=str, default="Qwen35-9B-RL-81Classes",
@@ -406,8 +408,14 @@ def main():
             max_pixels=MAX_PIXELS,
             trust_remote_code=True,
         )
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+    gpu_name = torch.cuda.get_device_name(0)
+    print(f"--> GPU phát hiện: {gpu_name} ({vram_gb:.1f} GB VRAM)", flush=True)
+
     if hasattr(processor, "tokenizer") and processor.tokenizer is not None:
-        processor.tokenizer.padding_side = "right"
+        processor.tokenizer.padding_side = "left"
 
     base_model = AutoModelForImageTextToText.from_pretrained(
         args.model_id,
@@ -415,7 +423,8 @@ def main():
         device_map={"": 0},
         trust_remote_code=True,
     )
-    base_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    if vram_gb < 70.0:
+        base_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     base_model.enable_input_require_grads()
 
     model = PeftModel.from_pretrained(
@@ -433,7 +442,8 @@ def main():
     est_total_steps = args.max_steps if args.max_steps > 0 else max(1, total_samples // args.grad_accum)
     print(
         f"--> Đã nạp toàn bộ {len(dataset):,} mẫu dữ liệu (x {args.epochs} epoch = {total_samples:,} mẫu) | "
-        f"G={args.num_generations}, grad_accum={args.grad_accum} (tối ưu ~38GB/48GB VRAM, chỉ train LoRA).",
+        f"batch_size={args.batch_size}, G={args.num_generations} ({args.batch_size * args.num_generations} chuỗi/lượt), "
+        f"grad_accum={args.grad_accum}.",
         flush=True,
     )
 
@@ -460,33 +470,41 @@ def main():
         attempts_in_step = 0
 
         while valid_groups < args.grad_accum and sample_idx < total_samples:
-            item = dataset[sample_idx % len(dataset)]
-            sample_idx += 1
-            attempts_in_step += 1
-            pbar.update(1)
+            cur_bs = min(args.batch_size, total_samples - sample_idx)
+            batch_images, batch_gts, batch_texts = [], [], []
+            for _ in range(cur_bs):
+                item = dataset[sample_idx % len(dataset)]
+                sample_idx += 1
+                attempts_in_step += 1
+                image, gt_class = extract_item_image_and_gt(item)
+                messages = [
+                    {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
+                    {"role": "user", "content": [
+                        {"type": "image", "image": image},
+                        {"type": "text", "text": USER_PROMPT},
+                    ]},
+                ]
+                prompt_text = processor.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True, enable_thinking=True
+                )
+                batch_images.append(image)
+                batch_gts.append(gt_class)
+                batch_texts.append(prompt_text)
+            pbar.update(cur_bs)
 
-            image, gt_class = extract_item_image_and_gt(item)
-            messages = [
-                {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
-                {"role": "user", "content": [
-                    {"type": "image", "image": image},
-                    {"type": "text", "text": USER_PROMPT},
-                ]},
-            ]
-            prompt_text = processor.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True, enable_thinking=True
-            )
-            prompt_inputs = processor(
-                text=[prompt_text], images=[image], return_tensors="pt"
+            # --- BƯỚC A: MULTI-IMAGE BATCH ROLLOUT (B ảnh x G câu = B*G chuỗi cùng lúc) ---
+            if hasattr(processor, "tokenizer") and processor.tokenizer is not None:
+                processor.tokenizer.padding_side = "left"
+            batch_prompt_inputs = processor(
+                text=batch_texts, images=batch_images, return_tensors="pt", padding=True
             ).to(device)
-            prompt_len = prompt_inputs["input_ids"].size(1)
+            batch_prompt_len = batch_prompt_inputs["input_ids"].size(1)
 
-            # --- BƯỚC A: ROLLOUT G CÂU TRẢ LỜI TỪ POLICY HIỆN TẠI ---
             model.eval()
             model.set_adapter("policy")
             with torch.no_grad():
-                gen_ids = model.generate(
-                    **prompt_inputs,
+                batch_gen_ids = model.generate(
+                    **batch_prompt_inputs,
                     max_new_tokens=args.max_new_tokens,
                     do_sample=True,
                     temperature=args.temperature,
@@ -494,78 +512,101 @@ def main():
                     num_return_sequences=args.num_generations,
                     pad_token_id=pad_token_id,
                     eos_token_id=eos_token_id,
+                    use_cache=True,
                 ).clone()
 
-            comp_ids = gen_ids[:, prompt_len:]
-            decoded_list = processor.batch_decode(comp_ids, skip_special_tokens=False)
-            r_acc_list = []
-            r_fmt_list = []
-            for text in decoded_list:
-                full_completion = "<think>\n" + text
-                r_acc, r_fmt = compute_gdpo_rewards(full_completion, gt_class)
-                r_acc_list.append(r_acc)
-                r_fmt_list.append(r_fmt)
+            G = args.num_generations
+            all_comp_ids = batch_gen_ids[:, batch_prompt_len:]
+            all_decoded = processor.batch_decode(all_comp_ids, skip_special_tokens=False)
+            for b in range(cur_bs):
+                gt_class = batch_gts[b]
+                decoded_list = all_decoded[b * G : (b + 1) * G]
+                comp_ids_b = all_comp_ids[b * G : (b + 1) * G]
 
-            step_acc_sum += sum(r_acc_list) / len(r_acc_list)
-            step_fmt_sum += sum(r_fmt_list) / len(r_fmt_list)
+                r_acc_list, r_fmt_list = [], []
+                for text in decoded_list:
+                    full_completion = "<think>\n" + text
+                    r_acc, r_fmt = compute_gdpo_rewards(full_completion, gt_class)
+                    r_acc_list.append(r_acc)
+                    r_fmt_list.append(r_fmt)
 
-            # Tính Decoupled Advantage theo đúng công thức GDPO
-            advantages = compute_gdpo_advantages(
-                r_acc_list, r_fmt_list, w_acc=args.w_acc, w_fmt=args.w_fmt, device=device
-            )
-            if advantages is None:
-                continue
+                step_acc_sum += sum(r_acc_list) / len(r_acc_list)
+                step_fmt_sum += sum(r_fmt_list) / len(r_fmt_list)
 
-            G, total_len = gen_ids.shape
-            attn_mask = torch.ones_like(gen_ids, dtype=torch.long)
-            for i in range(G):
-                eos_positions = (gen_ids[i, prompt_len:] == eos_token_id).nonzero(as_tuple=True)[0]
-                if len(eos_positions) > 0:
-                    first_eos = prompt_len + int(eos_positions[0].item())
-                    if first_eos + 1 < total_len:
-                        attn_mask[i, first_eos + 1 :] = 0
+                # Tính Decoupled Advantage theo đúng công thức GDPO
+                advantages = compute_gdpo_advantages(
+                    r_acc_list, r_fmt_list, w_acc=args.w_acc, w_fmt=args.w_fmt, device=device
+                )
+                if advantages is None:
+                    continue
 
-            # --- BƯỚC B: TÍNH LOGP CỦA REFERENCE MODEL (checkpoint-2004 gốc) ---
-            prompt_mm_ids = prompt_inputs.get("mm_token_type_ids")
-            with torch.no_grad():
-                model.set_adapter("ref")
-                ref_logps, comp_mask = compute_completion_logprobs(
+                single_prompt_inputs = processor(
+                    text=[batch_texts[b]], images=[batch_images[b]], return_tensors="pt"
+                ).to(device)
+                prompt_len = single_prompt_inputs["input_ids"].size(1)
+
+                max_valid_comp = 1
+                for i in range(G):
+                    eos_pos = (comp_ids_b[i] == eos_token_id).nonzero(as_tuple=True)[0]
+                    if len(eos_pos) > 0:
+                        max_valid_comp = max(max_valid_comp, int(eos_pos[0].item()) + 1)
+                    else:
+                        max_valid_comp = comp_ids_b.size(1)
+                comp_ids_trimmed = comp_ids_b[:, :max_valid_comp]
+
+                gen_ids = torch.cat(
+                    [single_prompt_inputs["input_ids"].repeat(G, 1), comp_ids_trimmed], dim=1
+                )
+                total_len = gen_ids.size(1)
+                attn_mask = torch.ones_like(gen_ids, dtype=torch.long)
+                for i in range(G):
+                    eos_positions = (gen_ids[i, prompt_len:] == eos_token_id).nonzero(as_tuple=True)[0]
+                    if len(eos_positions) > 0:
+                        first_eos = prompt_len + int(eos_positions[0].item())
+                        if first_eos + 1 < total_len:
+                            attn_mask[i, first_eos + 1 :] = 0
+
+                # --- BƯỚC B: TÍNH LOGP CỦA REFERENCE MODEL (checkpoint-2004 gốc) ---
+                prompt_mm_ids = single_prompt_inputs.get("mm_token_type_ids")
+                with torch.no_grad():
+                    model.set_adapter("ref")
+                    ref_logps, comp_mask = compute_completion_logprobs(
+                        model,
+                        gen_ids,
+                        attn_mask,
+                        single_prompt_inputs["pixel_values"],
+                        single_prompt_inputs["image_grid_thw"],
+                        prompt_len,
+                        prompt_mm_token_type_ids=prompt_mm_ids,
+                    )
+
+                # --- BƯỚC C: TÍNH LOGP CỦA POLICY MODEL & GDPO LOSS ---
+                model.train()
+                model.set_adapter("policy")
+                policy_logps, comp_mask = compute_completion_logprobs(
                     model,
                     gen_ids,
                     attn_mask,
-                    prompt_inputs["pixel_values"],
-                    prompt_inputs["image_grid_thw"],
+                    single_prompt_inputs["pixel_values"],
+                    single_prompt_inputs["image_grid_thw"],
                     prompt_len,
                     prompt_mm_token_type_ids=prompt_mm_ids,
                 )
 
-            # --- BƯỚC C: TÍNH LOGP CỦA POLICY MODEL & GDPO LOSS ---
-            model.train()
-            model.set_adapter("policy")
-            policy_logps, comp_mask = compute_completion_logprobs(
-                model,
-                gen_ids,
-                attn_mask,
-                prompt_inputs["pixel_values"],
-                prompt_inputs["image_grid_thw"],
-                prompt_len,
-                prompt_mm_token_type_ids=prompt_mm_ids,
-            )
+                log_ratio = ref_logps.detach() - policy_logps
+                per_token_kl = torch.exp(log_ratio) - log_ratio - 1.0  # [G, C]
 
-            log_ratio = ref_logps.detach() - policy_logps
-            per_token_kl = torch.exp(log_ratio) - log_ratio - 1.0  # [G, C]
+                adv_expanded = advantages.unsqueeze(1)  # [G, 1]
+                per_token_loss = -(adv_expanded * policy_logps) + args.kl_beta * per_token_kl
+                masked_loss = (per_token_loss * comp_mask).sum(dim=1) / comp_mask.sum(dim=1).clamp(min=1.0)
+                loss = masked_loss.mean() / max(1, args.grad_accum)
 
-            adv_expanded = advantages.unsqueeze(1)  # [G, 1]
-            per_token_loss = -(adv_expanded * policy_logps) + args.kl_beta * per_token_kl
-            masked_loss = (per_token_loss * comp_mask).sum(dim=1) / comp_mask.sum(dim=1).clamp(min=1.0)
-            loss = masked_loss.mean() / max(1, args.grad_accum)
+                loss.backward()
 
-            loss.backward()
-
-            mean_kl = ((per_token_kl.detach() * comp_mask).sum() / comp_mask.sum().clamp(min=1.0)).item()
-            step_loss_sum += loss.item() * args.grad_accum
-            step_kl_sum += mean_kl
-            valid_groups += 1
+                mean_kl = ((per_token_kl.detach() * comp_mask).sum() / comp_mask.sum().clamp(min=1.0)).item()
+                step_loss_sum += loss.item() * args.grad_accum
+                step_kl_sum += mean_kl
+                valid_groups += 1
 
         if valid_groups == 0:
             continue

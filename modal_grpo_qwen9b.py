@@ -42,6 +42,7 @@ grpo_image = (
         "tqdm",
         "tensorboard",
         "wandb",
+        "flash-linear-attention",
     )
     # Đóng gói trực tiếp file train_grpo_qwen9b_81classes.py vào trong container
     .add_local_file(
@@ -58,11 +59,11 @@ app = modal.App(APP_NAME)
 
 
 # ==============================================================================
-# 2. HÀM CHẠY TRÊN GPU A100-80GB (HOẶC H100) CỦA MODAL
+# 2. HÀM CHẠY TRÊN GPU H100 (80GB HBM3 - SIÊU TỐC) CỦA MODAL
 # ==============================================================================
 @app.function(
     image=grpo_image,
-    gpu="L40S",               # L40S = 48GB VRAM chuẩn trên Modal (có thể đổi "A100-40GB" / "A100-80GB")
+    gpu="H100",               # H100 80GB HBM3 (3350 GB/s) + batch_size=4 x G=4 (16 chuỗi/lượt)
     timeout=24 * 3600,        # Tối đa 24 tiếng để chạy hết toàn bộ bộ dữ liệu
     volumes={"/data": vol},   # Gắn ổ cứng bền vững vào /data
     cpu=8.0,
@@ -78,6 +79,7 @@ def run_grpo_on_modal(
     epochs: int = 1,
     max_steps: int = 0,
     save_steps: int = 100,
+    batch_size: int = 4,
     num_generations: int = 4,
     grad_accum: int = 8,
     lr: float = 5e-6,
@@ -160,6 +162,7 @@ def run_grpo_on_modal(
         "--epochs", str(epochs),
         "--max_steps", str(max_steps),
         "--save_steps", str(save_steps),
+        "--batch_size", str(batch_size),
         "--num_generations", str(num_generations),
         "--grad_accum", str(grad_accum),
         "--lr", str(lr),
@@ -186,6 +189,7 @@ def main(
     epochs: int = 1,
     max_steps: int = 0,
     save_steps: int = 100,
+    batch_size: int = 4,
     num_generations: int = 4,
     grad_accum: int = 8,
     lr: float = 5e-6,
@@ -209,6 +213,7 @@ def main(
         epochs=epochs,
         max_steps=max_steps,
         save_steps=save_steps,
+        batch_size=batch_size,
         num_generations=num_generations,
         grad_accum=grad_accum,
         lr=lr,
