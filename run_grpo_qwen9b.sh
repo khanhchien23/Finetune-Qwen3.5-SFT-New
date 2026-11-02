@@ -18,10 +18,11 @@ SFT_REPO="${SFT_REPO:-KhanhChien/FineTuneQwen35-9B-New}"
 SFT_CHECKPOINT="${SFT_CHECKPOINT:-checkpoint-2004}"
 HF_PUSH_REPO="${HF_PUSH_REPO:-KhanhChien/GRPO-Qwen35-9B-New}"
 
-MAX_STEPS="${MAX_STEPS:-300}"
-SAVE_STEPS="${SAVE_STEPS:-50}"
-NUM_GEN="${NUM_GEN:-4}"
-GRAD_ACCUM="${GRAD_ACCUM:-4}"
+EPOCHS="${EPOCHS:-1}"
+MAX_STEPS="${MAX_STEPS:-0}"
+SAVE_STEPS="${SAVE_STEPS:-100}"
+NUM_GEN="${NUM_GEN:-6}"
+GRAD_ACCUM="${GRAD_ACCUM:-8}"
 LR="${LR:-5e-6}"
 KL_BETA="${KL_BETA:-0.02}"
 
@@ -57,6 +58,7 @@ python3 "${SCRIPT_DIR}/train_grpo_qwen9b_81classes.py" \
     --dataset "${LOCAL_DATA_DIR}" \
     --output_dir "${SCRIPT_DIR}/Qwen3.5-9B-GRPO-${SFT_CHECKPOINT}" \
     --hub_repo "${HF_PUSH_REPO}" \
+    --epochs "${EPOCHS}" \
     --max_steps "${MAX_STEPS}" \
     --save_steps "${SAVE_STEPS}" \
     --num_generations "${NUM_GEN}" \

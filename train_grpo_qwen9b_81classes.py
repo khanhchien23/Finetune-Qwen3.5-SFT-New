@@ -312,19 +312,21 @@ def main():
     parser.add_argument("--output_dir", type=str, default="./Qwen3.5-9B-GRPO-ckpt2004")
     parser.add_argument("--hub_repo", type=str, default="KhanhChien/GRPO-Qwen35-9B-New",
                         help="Repo HuggingFace để tự động lưu các checkpoint GRPO")
-    parser.add_argument("--max_steps", type=int, default=300,
-                        help="Số bước cập nhật GRPO (300 steps * grad_accum 4 = 1,200 ảnh)")
-    parser.add_argument("--num_generations", type=int, default=4,
-                        help="Số lượng câu trả lời G sinh ra cho mỗi ảnh (Group Size G=4)")
-    parser.add_argument("--grad_accum", type=int, default=4,
-                        help="Số ảnh tích lũy gradient cho 1 bước cập nhật")
+    parser.add_argument("--epochs", type=int, default=1,
+                        help="Số epoch duyệt qua toàn bộ tập dữ liệu (mặc định: 1 epoch = toàn bộ dataset)")
+    parser.add_argument("--max_steps", type=int, default=0,
+                        help="0 = Không giới hạn, chạy hết toàn bộ bộ dữ liệu; >0 nếu muốn dừng sớm theo step")
+    parser.add_argument("--num_generations", type=int, default=6,
+                        help="Số lượng câu trả lời G sinh ra cho mỗi ảnh (G=6 tối ưu cho GPU 48GB VRAM)")
+    parser.add_argument("--grad_accum", type=int, default=8,
+                        help="Số ảnh có phương sai > 0 tích lũy gradient cho 1 bước cập nhật")
     parser.add_argument("--lr", type=float, default=5e-6,
-                        help="Learning rate cho GRPO (chuẩn RL là 5e-6)")
+                        help="Learning rate cho GRPO (chuẩn RL trên LoRA là 5e-6)")
     parser.add_argument("--kl_beta", type=float, default=0.02,
                         help="Hệ số phạt KL divergence so với checkpoint-2004")
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--max_new_tokens", type=int, default=384)
-    parser.add_argument("--save_steps", type=int, default=50)
+    parser.add_argument("--save_steps", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--wandb_project", type=str, default="Qwen35-9B-RL-81Classes",
                         help="Tên project trên WandB để vẽ chung biểu đồ so sánh GRPO vs GDPO")
@@ -400,15 +402,20 @@ def main():
 
     processor.save_pretrained(str(out_dir))
 
-    # 3. Tải dữ liệu huấn luyện
-    needed_samples = args.max_steps * args.grad_accum * 3
-    dataset = load_grpo_dataset(args.dataset, max_samples=needed_samples, seed=args.seed)
-    print(f"--> Đã nạp {len(dataset):,} mẫu dữ liệu để chạy GRPO ({args.max_steps} steps, G={args.num_generations}).", flush=True)
+    # 3. Tải TOÀN BỘ dữ liệu huấn luyện (max_samples=0 -> lấy hết 100% dataset)
+    dataset = load_grpo_dataset(args.dataset, max_samples=0, seed=args.seed)
+    total_samples = len(dataset) * max(1, args.epochs)
+    est_total_steps = args.max_steps if args.max_steps > 0 else max(1, total_samples // args.grad_accum)
+    print(
+        f"--> Đã nạp toàn bộ {len(dataset):,} mẫu dữ liệu (x {args.epochs} epoch = {total_samples:,} mẫu) | "
+        f"G={args.num_generations}, grad_accum={args.grad_accum} (tối ưu ~38GB/48GB VRAM, chỉ train LoRA).",
+        flush=True,
+    )
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=0.01)
     scheduler = get_cosine_schedule_with_warmup(
-        optimizer, num_warmup_steps=max(5, int(args.max_steps * 0.05)), num_training_steps=args.max_steps
+        optimizer, num_warmup_steps=max(10, int(est_total_steps * 0.05)), num_training_steps=est_total_steps
     )
 
     pad_token_id = processor.tokenizer.pad_token_id or processor.tokenizer.eos_token_id
@@ -418,8 +425,8 @@ def main():
     sample_idx = 0
     optimizer.zero_grad()
 
-    pbar = tqdm(total=args.max_steps, desc="GRPO Training", unit="step")
-    while global_step < args.max_steps:
+    pbar = tqdm(total=total_samples, desc="GRPO Dataset Progress", unit="img")
+    while sample_idx < total_samples and (args.max_steps <= 0 or global_step < args.max_steps):
         step_loss_sum = 0.0
         step_kl_sum = 0.0
         step_reward_sum = 0.0
@@ -428,11 +435,12 @@ def main():
         valid_groups = 0
         attempts_in_step = 0
 
-        # Tích lũy đủ `grad_accum` nhóm có phương sai phần thưởng > 0
-        while valid_groups < args.grad_accum and attempts_in_step < args.grad_accum * 3:
+        # Tích lũy đủ `grad_accum` nhóm có phương sai phần thưởng > 0 (hoặc đến khi hết dataset)
+        while valid_groups < args.grad_accum and sample_idx < total_samples:
             item = dataset[sample_idx % len(dataset)]
             sample_idx += 1
             attempts_in_step += 1
+            pbar.update(1)
 
             image, gt_class = extract_item_image_and_gt(item)
             messages = [
@@ -539,14 +547,15 @@ def main():
             step_kl_sum += mean_kl
             valid_groups += 1
 
-        if valid_groups > 0:
-            torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
-            optimizer.step()
-            scheduler.step()
-            optimizer.zero_grad()
+        if valid_groups == 0:
+            continue
+
+        torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
+        optimizer.step()
+        scheduler.step()
+        optimizer.zero_grad()
 
         global_step += 1
-        pbar.update(1)
 
         avg_loss = step_loss_sum / max(1, valid_groups)
         avg_kl = step_kl_sum / max(1, valid_groups)
@@ -557,7 +566,7 @@ def main():
         cur_lr = scheduler.get_last_lr()[0]
 
         print(
-            f"[GRPO Step {global_step}/{args.max_steps}] "
+            f"[GRPO Step {global_step} | Img {sample_idx}/{total_samples}] "
             f"reward={avg_reward:.3f} | rollout_acc={avg_acc:.2%} | format_ok={avg_fmt:.2%} | "
             f"loss={avg_loss:.4f} | kl={avg_kl:.4f} | lr={cur_lr:.2e}",
             flush=True,
@@ -571,6 +580,7 @@ def main():
             "train/kl_divergence": avg_kl,
             "train/learning_rate": cur_lr,
             "train/skipped_easy_groups": skipped_groups,
+            "train/samples_processed": sample_idx,
         }
         if tb_writer is not None:
             for k, v in metrics.items():
@@ -579,7 +589,8 @@ def main():
         if use_wandb:
             wandb.log(metrics, step=global_step)
 
-        if global_step % args.save_steps == 0 or global_step == args.max_steps:
+        is_finished = (sample_idx >= total_samples) or (args.max_steps > 0 and global_step >= args.max_steps)
+        if global_step % args.save_steps == 0 or is_finished:
             ckpt_name = f"checkpoint-grpo-{global_step}"
             ckpt_dir = out_dir / ckpt_name
             ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -594,7 +605,7 @@ def main():
                     f.rename(target)
                 sub_policy.rmdir()
             processor.save_pretrained(str(ckpt_dir))
-            print(f"--> Đã lưu GRPO checkpoint tại: {ckpt_dir}", flush=True)
+            print(f"--> Đã lưu GRPO LoRA checkpoint tại: {ckpt_dir}", flush=True)
             if args.hub_repo:
                 push_grpo_checkpoint_to_hub(ckpt_dir, args.hub_repo, ckpt_name, runs_dir=runs_dir)
 
@@ -603,7 +614,7 @@ def main():
         tb_writer.close()
     if use_wandb:
         wandb.finish()
-    print(f"=== HOÀN TẤT HUẤN LUYỆN GRPO ({args.max_steps} STEPS) ===", flush=True)
+    print(f"=== HOÀN TẤT HUẤN LUYỆN GRPO TOÀN BỘ DATASET ({sample_idx:,} ẢNH, {global_step} STEPS) ===", flush=True)
 
 
 if __name__ == "__main__":

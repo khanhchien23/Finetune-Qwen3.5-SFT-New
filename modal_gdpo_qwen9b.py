@@ -49,8 +49,8 @@ app = modal.App(APP_NAME)
 
 @app.function(
     image=gdpo_image,
-    gpu="A100-80GB",
-    timeout=12 * 3600,
+    gpu="L40S",               # L40S = 48GB VRAM chuẩn trên Modal (có thể đổi "A100-40GB" / "A100-80GB")
+    timeout=24 * 3600,        # Tối đa 24 tiếng để chạy hết toàn bộ bộ dữ liệu
     volumes={"/data": vol},
     cpu=8.0,
     memory=32768,
@@ -62,10 +62,11 @@ def run_gdpo_on_modal(
     sft_checkpoint: str = "checkpoint-2004",
     dataset_repo: str = "KhanhChien/Data-Qwen3.5-SFT-New",
     hub_repo: str = "KhanhChien/GDPO-Qwen35-9B-New",
-    max_steps: int = 300,
-    save_steps: int = 50,
-    num_generations: int = 4,
-    grad_accum: int = 4,
+    epochs: int = 1,
+    max_steps: int = 0,
+    save_steps: int = 100,
+    num_generations: int = 6,
+    grad_accum: int = 8,
     lr: float = 5e-6,
     kl_beta: float = 0.02,
 ):
@@ -127,6 +128,7 @@ def run_gdpo_on_modal(
         "--dataset", str(local_dataset_dir),
         "--output_dir", output_dir,
         "--hub_repo", hub_repo,
+        "--epochs", str(epochs),
         "--max_steps", str(max_steps),
         "--save_steps", str(save_steps),
         "--num_generations", str(num_generations),
@@ -147,10 +149,11 @@ def main(
     sft_checkpoint: str = "checkpoint-2004",
     dataset_repo: str = "KhanhChien/Data-Qwen3.5-SFT-New",
     hub_repo: str = "KhanhChien/GDPO-Qwen35-9B-New",
-    max_steps: int = 300,
-    save_steps: int = 50,
-    num_generations: int = 4,
-    grad_accum: int = 4,
+    epochs: int = 1,
+    max_steps: int = 0,
+    save_steps: int = 100,
+    num_generations: int = 6,
+    grad_accum: int = 8,
     lr: float = 5e-6,
     kl_beta: float = 0.02,
 ):
@@ -160,7 +163,7 @@ def main(
         raise ValueError(
             "Bạn cần truyền HuggingFace Token có quyền Write!\n"
             "Ví dụ:\n"
-            "  modal run --detach modal_gdpo_qwen9b.py --hf-token hf_xxxxxx --wandb-key xxxx --max-steps 300"
+            "  modal run --detach modal_gdpo_qwen9b.py --hf-token hf_xxxxxx --wandb-key xxxx"
         )
     run_gdpo_on_modal.remote(
         hf_token=token,
@@ -169,6 +172,7 @@ def main(
         sft_checkpoint=sft_checkpoint,
         dataset_repo=dataset_repo,
         hub_repo=hub_repo,
+        epochs=epochs,
         max_steps=max_steps,
         save_steps=save_steps,
         num_generations=num_generations,
