@@ -57,6 +57,7 @@ app = modal.App(APP_NAME)
 )
 def run_gdpo_on_modal(
     hf_token: str,
+    wandb_key: str = "",
     sft_repo: str = "KhanhChien/FineTuneQwen35-9B-New",
     sft_checkpoint: str = "checkpoint-2004",
     dataset_repo: str = "KhanhChien/Data-Qwen3.5-SFT-New",
@@ -73,6 +74,8 @@ def run_gdpo_on_modal(
     os.environ["HF_HOME"] = "/data/hf_cache"
     os.environ["HF_TOKEN"] = hf_token
     os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
+    if wandb_key:
+        os.environ["WANDB_API_KEY"] = wandb_key
 
     github_repo = "https://github.com/khanhchien23/Finetune-Qwen3.5-SFT-New.git"
     code_dir = Path("/data/code/Finetune-Qwen3.5-SFT-New")
@@ -139,6 +142,7 @@ def run_gdpo_on_modal(
 @app.local_entrypoint()
 def main(
     hf_token: str = "",
+    wandb_key: str = "",
     sft_repo: str = "KhanhChien/FineTuneQwen35-9B-New",
     sft_checkpoint: str = "checkpoint-2004",
     dataset_repo: str = "KhanhChien/Data-Qwen3.5-SFT-New",
@@ -151,14 +155,16 @@ def main(
     kl_beta: float = 0.02,
 ):
     token = hf_token or os.environ.get("HF_TOKEN", "")
+    w_key = wandb_key or os.environ.get("WANDB_API_KEY", "")
     if not token:
         raise ValueError(
             "Bạn cần truyền HuggingFace Token có quyền Write!\n"
             "Ví dụ:\n"
-            "  modal run --detach modal_gdpo_qwen9b.py --hf-token hf_xxxxxx --max-steps 300"
+            "  modal run --detach modal_gdpo_qwen9b.py --hf-token hf_xxxxxx --wandb-key xxxx --max-steps 300"
         )
     run_gdpo_on_modal.remote(
         hf_token=token,
+        wandb_key=w_key,
         sft_repo=sft_repo,
         sft_checkpoint=sft_checkpoint,
         dataset_repo=dataset_repo,
