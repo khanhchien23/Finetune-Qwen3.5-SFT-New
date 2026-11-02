@@ -338,7 +338,7 @@ def main():
     parser.add_argument("--kl_beta", type=float, default=0.02,
                         help="Hệ số phạt KL divergence so với checkpoint-2004")
     parser.add_argument("--temperature", type=float, default=0.8)
-    parser.add_argument("--max_new_tokens", type=int, default=256)
+    parser.add_argument("--max_new_tokens", type=int, default=384)
     parser.add_argument("--save_steps", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--wandb_project", type=str, default="Qwen35-9B-RL-81Classes",
