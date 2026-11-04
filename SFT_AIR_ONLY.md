@@ -75,6 +75,7 @@ python rewrite_air_cot_api.py `
   --dataset-dir D:\du_lieu_that\hf_sft_air_only_parquet `
   --output-dir D:\du_lieu_that\hf_sft_air_only_v2 `
   --model gpt-4o-mini `
+  --batch-size 16 `
   --limit 5 `
   --workers 4
 ```
@@ -86,8 +87,14 @@ python rewrite_air_cot_api.py `
   --dataset-dir D:\du_lieu_that\hf_sft_air_only_parquet `
   --output-dir D:\du_lieu_that\hf_sft_air_only_v2 `
   --model gpt-4o-mini `
+  --batch-size 16 `
   --workers 4
 ```
+
+`--batch-size 16` nghĩa là mỗi wave submit tối đa 16 ảnh lên API. Endpoint
+vision hiện tại vẫn gọi một request cho mỗi ảnh; `--workers 4` giới hạn 4
+request chạy đồng thời để tránh rate limit. Có thể dùng `--workers 16` nếu API
+key có quota phù hợp.
 
 Output:
 

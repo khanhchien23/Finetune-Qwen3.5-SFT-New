@@ -186,21 +186,31 @@ def process_split(dataset_dir, split, output, args, api_key):
             stream.flush()
         return job_id
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = [pool.submit(work, job) for job in jobs]
-        for number, future in enumerate(concurrent.futures.as_completed(futures), 1):
-            print(f"{split}: completed {number}/{len(jobs)} ({future.result()})", flush=True)
+    # The chat-completions vision endpoint accepts one image per request here.
+    # batch_size therefore controls how many requests are submitted per wave;
+    # workers controls actual concurrent requests within that wave.
+    completed_now = 0
+    for batch_start in range(0, len(jobs), args.batch_size):
+        batch = jobs[batch_start:batch_start + args.batch_size]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
+            futures = [pool.submit(work, job) for job in batch]
+            for future in concurrent.futures.as_completed(futures):
+                completed_now += 1
+                print(f"{split}: completed {completed_now}/{len(jobs)} "
+                      f"(batch {batch_start // args.batch_size + 1}, {future.result()})", flush=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY", ""))
-    parser.add_argument("--base-url", default="https://api.openai.com/v1")
-    parser.add_argument("--model", default="gpt-4o-mini")
+    parser.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY", "sk-Z8WrchdOB48aa4L7xtBilW9Bq00HZ1vHR3DkegwXLi04dPXE"))
+    parser.add_argument("--base-url", default="https://sv.devquote.shop/v1")
+    parser.add_argument("--model", default="claude-opus-5-5")
     parser.add_argument("--split", choices=("train", "validation", "both"), default="both")
     parser.add_argument("--limit", type=int, default=0, help="Rows per split; 0 means all")
+    parser.add_argument("--batch-size", type=int, default=16,
+                        help="Images submitted per API wave; default 16")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--retries", type=int, default=4)
@@ -209,8 +219,10 @@ def main():
         raise ValueError("Pass --api-key or set OPENAI_API_KEY")
     if not args.dataset_dir.is_dir() or args.output_dir.resolve() == args.dataset_dir.resolve():
         raise ValueError("dataset directory must exist and output directory must be different")
-    if args.limit < 0 or args.workers < 1:
-        raise ValueError("limit must be >= 0 and workers must be >= 1")
+    if args.limit < 0 or args.batch_size < 1 or args.workers < 1:
+        raise ValueError("limit must be >= 0; batch_size and workers must be >= 1")
+    if args.workers > args.batch_size:
+        raise ValueError("workers cannot be greater than batch_size")
     splits = ("train", "validation") if args.split == "both" else (args.split,)
     for split in splits:
         process_split(args.dataset_dir, split, args.output_dir / f"{split}-air-only-v2.jsonl", args, args.api_key)
