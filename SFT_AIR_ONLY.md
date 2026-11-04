@@ -56,3 +56,50 @@ Mỗi dòng có `gt_class`, `system_prompt`, `user_prompt`, `assistant_cot` và
 `messages`. Trường `assistant_cot` là toàn bộ chuỗi `<think>...</think>` và
 `<answer>...</answer>` gốc. Mặc định ảnh chỉ ghi metadata để file dễ mở bằng
 mắt. Có thể thử 5 dòng mỗi split bằng `--limit 5`.
+
+## Sinh lại prompt và CoT Air-only bằng API
+
+File `rewrite_air_cot_api.py` đọc ảnh thật từ Parquet và gọi vision API để
+rewrite `assistant_cot`. File gốc không bị sửa; output là dataset JSONL mới có
+prompt Air-only và CoT mới. Script tự resume theo `id` nếu bị ngắt.
+
+Ví dụ dùng OpenAI API, chạy thử 5 dòng mỗi split trước:
+
+```powershell
+cd D:\du_lieu_that\up_github_1
+$env:OPENAI_API_KEY = "sk-..."
+python rewrite_air_cot_api.py `
+  --dataset-dir D:\du_lieu_that\hf_sft_air_only_parquet `
+  --output-dir D:\du_lieu_that\hf_sft_air_only_v2 `
+  --model gpt-4o-mini `
+  --limit 5 `
+  --workers 4
+```
+
+Chạy toàn bộ sau khi kiểm tra thử:
+
+```powershell
+python rewrite_air_cot_api.py `
+  --dataset-dir D:\du_lieu_that\hf_sft_air_only_parquet `
+  --output-dir D:\du_lieu_that\hf_sft_air_only_v2 `
+  --model gpt-4o-mini `
+  --workers 4
+```
+
+Output:
+
+```text
+D:\du_lieu_that\hf_sft_air_only_v2\train-air-only-v2.jsonl
+D:\du_lieu_that\hf_sft_air_only_v2\validation-air-only-v2.jsonl
+```
+
+Script bắt buộc output phải có `<think>...</think>`, `<answer>Air.X</answer>`,
+answer phải khớp `gt_class`, và không được còn `Grd.`, `Sea.`, `81 classes`,
+`ground vehicle` hoặc `naval vessel`. Dòng API lỗi/không hợp lệ sẽ retry và
+không được ghi vào file.
+
+Có thể dùng endpoint OpenAI-compatible khác bằng `--base-url`, ví dụ:
+
+```powershell
+python rewrite_air_cot_api.py ... --base-url https://openrouter.ai/api/v1 --model openai/gpt-4o-mini
+```
