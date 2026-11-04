@@ -33,3 +33,26 @@ Script vẫn giữ gradient checkpointing để an toàn VRAM ở sequence lengt
 Script dùng **base Qwen/Qwen3.5-9B + LoRA SFT mới**, không nạp GRPO-304.
 Đầu ra mặc định là `Qwen3.5-9B-SFT-Air-Only/final_adapter`. Sau khi SFT xong,
 dùng chính adapter này để infer trên các folder `Air.*`.
+
+## Xuất CoT gốc của dataset để kiểm tra bằng mắt
+
+File `export_sft_cot_jsonl.py` xuất chính target đã dùng để train, không phải
+CoT do model sinh ra:
+
+```powershell
+cd D:\du_lieu_that\up_github_1
+python export_sft_cot_jsonl.py `
+  --dataset-dir D:\du_lieu_that\hf_sft_air_only_parquet
+```
+
+Kết quả:
+
+```text
+D:\du_lieu_that\hf_sft_air_only_parquet\jsonl\train-air-only.jsonl
+D:\du_lieu_that\hf_sft_air_only_parquet\jsonl\validation-air-only.jsonl
+```
+
+Mỗi dòng có `gt_class`, `system_prompt`, `user_prompt`, `assistant_cot` và
+`messages`. Trường `assistant_cot` là toàn bộ chuỗi `<think>...</think>` và
+`<answer>...</answer>` gốc. Mặc định ảnh chỉ ghi metadata để file dễ mở bằng
+mắt. Có thể thử 5 dòng mỗi split bằng `--limit 5`.
