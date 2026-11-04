@@ -18,6 +18,7 @@ import argparse
 import base64
 import concurrent.futures
 import json
+import io
 import os
 import random
 import socket
@@ -61,14 +62,14 @@ REWRITE_INSTRUCTION = """Rewrite the supplied reasoning for the Air-only 30-clas
 
 
 def image_bytes(image):
+    """Encode the embedded image compactly, similar to the fast old pipeline."""
     if isinstance(image, dict):
         raw = image.get("bytes")
         if raw:
-            return raw, image.get("path", "image.png")
-    import io
+            return raw, image.get("path", "image.jpg")
     buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    return buffer.getvalue(), "image.png"
+    image.convert("RGB").save(buffer, format="JPEG", quality=90, optimize=True)
+    return buffer.getvalue(), "image.jpg"
 
 
 def extract_answer(cot):
@@ -98,12 +99,12 @@ def api_call(api_key, base_url, model, image, old_cot, label, timeout, retries):
     payload = {
         "model": model,
         "temperature": 0.2,
-        "response_format": {"type": "json_object"},
+        "max_tokens": 500,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": [
                 {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": image_data, "detail": "high"}},
+                {"type": "image_url", "image_url": {"url": image_data}},
             ]},
         ],
     }
@@ -119,11 +120,13 @@ def api_call(api_key, base_url, model, image, old_cot, label, timeout, retries):
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 body = json.loads(response.read().decode("utf-8"))
             content = body["choices"][0]["message"]["content"]
+            # The fast legacy endpoint returns the tagged CoT directly. Also
+            # accept JSON when a compatible proxy chooses to wrap the answer.
             try:
                 result = json.loads(content)
+                cot = result.get("assistant_cot", content) if isinstance(result, dict) else content
             except json.JSONDecodeError:
-                result = {"assistant_cot": content}
-            cot = result.get("assistant_cot", "")
+                cot = content
             validate_cot(cot, label)
             return cot
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError,
@@ -219,17 +222,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY", "sk-Z8WrchdOB48aa4L7xtBilW9Bq00HZ1vHR3DkegwXLi04dPXE"))
-    parser.add_argument("--base-url", default="https://sv.devquote.shop/v1")
-    parser.add_argument("--model", default="claude-opus-5-5")
+    parser.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY", ""))
+    parser.add_argument("--base-url", default="https://api.openai.com/v1")
+    parser.add_argument("--model", default="gpt-4o-mini")
     parser.add_argument("--split", choices=("train", "validation", "both"), default="both")
     parser.add_argument("--limit", type=int, default=0, help="Rows per split; 0 means all")
     parser.add_argument("--batch-size", type=int, default=16,
                         help="Images submitted per API wave; default 16")
-    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--workers", type=int, default=16,
+                        help="Concurrent API requests; default 16")
     parser.add_argument("--timeout", type=int, default=300,
                         help="API read timeout in seconds; default 300")
-    parser.add_argument("--retries", type=int, default=4)
+    parser.add_argument("--retries", type=int, default=3)
     args = parser.parse_args()
     if not args.api_key:
         raise ValueError("Pass --api-key or set OPENAI_API_KEY")

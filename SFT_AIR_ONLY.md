@@ -92,9 +92,14 @@ python rewrite_air_cot_api.py `
 ```
 
 `--batch-size 16` nghĩa là mỗi wave submit tối đa 16 ảnh lên API. Endpoint
-vision hiện tại vẫn gọi một request cho mỗi ảnh; `--workers 4` giới hạn 4
-request chạy đồng thời để tránh rate limit. Có thể dùng `--workers 16` nếu API
-key có quota phù hợp.
+vision hiện tại vẫn gọi một request cho mỗi ảnh; `--workers 16` cho phép tối đa
+16 request chạy đồng thời. Nếu proxy giới hạn rate, giảm xuống `--workers 4`
+hoặc `--workers 8`.
+
+Pipeline hiện encode ảnh JPEG nhẹ, không ép `detail=high`, giới hạn output 500
+token và mặc định chạy 16 request đồng thời để gần với tốc độ của pipeline
+`generate_vlm_grounded_cot_api.py`. Nếu proxy giới hạn rate, giảm xuống
+`--workers 4` hoặc `--workers 8`.
 
 Output:
 
