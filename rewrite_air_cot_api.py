@@ -20,6 +20,7 @@ import concurrent.futures
 import json
 import os
 import random
+import socket
 import re
 import threading
 import time
@@ -125,7 +126,8 @@ def api_call(api_key, base_url, model, image, old_cot, label, timeout, retries):
             cot = result.get("assistant_cot", "")
             validate_cot(cot, label)
             return cot
-        except (urllib.error.HTTPError, urllib.error.URLError, KeyError, ValueError, json.JSONDecodeError) as exc:
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError,
+                socket.timeout, KeyError, ValueError, json.JSONDecodeError) as exc:
             last_error = exc
             if attempt < retries:
                 time.sleep((2 ** attempt) + random.random())
@@ -190,14 +192,27 @@ def process_split(dataset_dir, split, output, args, api_key):
     # batch_size therefore controls how many requests are submitted per wave;
     # workers controls actual concurrent requests within that wave.
     completed_now = 0
+    failed = []
     for batch_start in range(0, len(jobs), args.batch_size):
         batch = jobs[batch_start:batch_start + args.batch_size]
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
             futures = [pool.submit(work, job) for job in batch]
             for future in concurrent.futures.as_completed(futures):
-                completed_now += 1
-                print(f"{split}: completed {completed_now}/{len(jobs)} "
-                      f"(batch {batch_start // args.batch_size + 1}, {future.result()})", flush=True)
+                try:
+                    job_id = future.result()
+                except Exception as exc:
+                    failed.append(exc)
+                    print(f"{split}: FAILED in batch {batch_start // args.batch_size + 1}: "
+                          f"{type(exc).__name__}: {exc}", flush=True)
+                else:
+                    completed_now += 1
+                    print(f"{split}: completed {completed_now}/{len(jobs)} "
+                          f"(batch {batch_start // args.batch_size + 1}, {job_id})", flush=True)
+    if failed:
+        raise RuntimeError(
+            f"{split}: {len(failed)} request(s) failed after retries. "
+            f"Successful rows were saved; rerun the same command to resume."
+        ) from failed[0]
 
 
 def main():
@@ -212,7 +227,8 @@ def main():
     parser.add_argument("--batch-size", type=int, default=16,
                         help="Images submitted per API wave; default 16")
     parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--timeout", type=int, default=180)
+    parser.add_argument("--timeout", type=int, default=300,
+                        help="API read timeout in seconds; default 300")
     parser.add_argument("--retries", type=int, default=4)
     args = parser.parse_args()
     if not args.api_key:
