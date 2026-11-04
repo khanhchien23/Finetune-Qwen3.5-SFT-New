@@ -87,6 +87,7 @@ def run_grpo_on_modal(
     lr: float = 5e-6,
     kl_beta: float = 0.02,
     epoch_offset: int = 0,
+    rollout_log_every: int = 1,
 ):
     import subprocess
     import sys
@@ -174,6 +175,7 @@ def run_grpo_on_modal(
         "--lr", str(lr),
         "--kl_beta", str(kl_beta),
         "--epoch_offset", str(epoch_offset),
+        "--rollout_log_every", str(rollout_log_every),
     ]
     if policy_repo:
         cmd += ["--policy_repo", policy_repo]
@@ -208,6 +210,7 @@ def main(
     lr: float = 5e-6,
     kl_beta: float = 0.02,
     epoch_offset: int = 0,
+    rollout_log_every: int = 1,
 ):
     token = hf_token or os.environ.get("HF_TOKEN", "")
     w_key = wandb_key or os.environ.get("WANDB_API_KEY", "")
@@ -235,4 +238,5 @@ def main(
         lr=lr,
         kl_beta=kl_beta,
         epoch_offset=epoch_offset,
+        rollout_log_every=rollout_log_every,
     )
