@@ -53,7 +53,10 @@ REWRITE_INSTRUCTION = (
     "Coarse Category, Fine-Grained Visual Features, and Disambiguation & Conclusion. Preserve the "
     "correct target label exactly. Remove only references to the old 81-class inventory and non-Air "
     "categories such as ground vehicles or naval vessels. Do not invent visual details unsupported "
-    "by the image. Output ONLY the exact <think>...</think>\\n<answer>...</answer> block."
+    "by the image. In Steps 1, 2, and 3, never write any Air.* class label, "
+    "the ground-truth label, or meta phrases such as target classification, validated, "
+    "standard processing, or confirmed. Mention candidate class labels only in Step 4. "
+    "Output ONLY the exact <think>...</think>\\n<answer>...</answer> block."
 )
 
 
@@ -85,9 +88,24 @@ def validate_cot(cot, label):
         return False, "missing think tags"
     if extract_answer(cot) != label:
         return False, f"answer {extract_answer(cot)!r} != {label!r}"
-    if not all(f"{number}." in cot for number in (1, 2, 3, 4)):
+    think_body = re.search(r"<think>\s*(.*?)\s*</think>", cot, re.I | re.S).group(1)
+    headings = [
+        re.search(r"1\.\s*Viewpoint(?:\s*&\s*Environment)?\s*:", think_body, re.I),
+        re.search(r"2\.\s*Coarse Category\s*:", think_body, re.I),
+        re.search(r"3\.\s*Fine-Grained Visual Features\s*:", think_body, re.I),
+        re.search(r"4\.\s*Disambiguation\s*&\s*Conclusion\s*:", think_body, re.I),
+    ]
+    if not all(headings):
         return False, "missing numbered reasoning section"
-    forbidden = ("grd.", "sea.", "81 target", "81 classes", "ground vehicle", "naval vessel")
+    step1_3 = think_body[:headings[3].start()]
+    early_labels = re.findall(r"\bAir\.[A-Za-z0-9.]+\b", step1_3)
+    if early_labels:
+        return False, f"Air class label appears before Step 4: {sorted(set(early_labels))}"
+    forbidden = (
+        "grd.", "sea.", "81 target", "81 classes", "ground vehicle", "naval vessel",
+        "target classification", "ground-truth", "standard processing", "validated",
+        "validation passed", "jumping directly", "template applied",
+    )
     found = [word for word in forbidden if word in cot.lower()]
     return (False, f"forbidden references {found}") if found else (True, "OK")
 
@@ -99,13 +117,24 @@ def old_cot(row):
     return text_content(messages[-1].get("content", "")) if isinstance(messages, list) and messages else ""
 
 
+def redact_class_labels(cot):
+    """Prevent the old answer label from leaking into the new visual reasoning."""
+    for label in sorted(AIR_CLASSES, key=len, reverse=True):
+        cot = re.sub(rf"\b{re.escape(label)}\b", "the target aircraft class", cot,
+                     flags=re.IGNORECASE)
+    return cot
+
+
 async def rewrite_one(client, model, row, record_id, semaphore, timeout, retries):
     label = row.get("gt_class", "")
     if label not in AIR_CLASSES:
         raise ValueError(f"{record_id}: unexpected gt_class {label!r}")
     request_text = (
-        f"{REWRITE_INSTRUCTION}\n\nGround-truth label; answer MUST be exactly: `{label}`\n\n"
-        f"Old CoT to rewrite:\n{old_cot(row)}"
+        f"{REWRITE_INSTRUCTION}\n\n"
+        f"The answer MUST be exactly `<answer>{label}</answer>`. Do not write `{label}` "
+        "anywhere before the <answer> tag.\n\n"
+        f"Old visual reasoning to rewrite (class labels have been redacted):\n"
+        f"{redact_class_labels(old_cot(row))}"
     )
     async with semaphore:
         last_error = ""
@@ -133,6 +162,10 @@ async def rewrite_one(client, model, row, record_id, semaphore, timeout, retries
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
             if attempt < retries:
+                request_text += (
+                    f"\n\nPrevious attempt was rejected because: {last_error}. "
+                    "Rewrite it again and fix this exact problem."
+                )
                 await asyncio.sleep(1.0 + attempt * 1.5 + random.random())
     raise RuntimeError(f"{record_id} failed after {retries + 1} attempts: {last_error}")
 
