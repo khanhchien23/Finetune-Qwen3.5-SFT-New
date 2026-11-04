@@ -15,7 +15,7 @@ Chạy local/Linux/Modal container:
 ```bash
 cd /path/to/up_github_1
 chmod +x run_sft_air_only.sh
-HF_TOKEN=hf_xxx \\
+ HF_TOKEN=hf_xxx \\
 HUB_REPO=KhanhChien/FineTuneQwen35-9B-Air-Only \\
 ./run_sft_air_only.sh
 ```
@@ -25,6 +25,10 @@ Nếu muốn thử ngắn trước:
 ```bash
 EPOCHS=1 SAVE_STEPS=50 ./run_sft_air_only.sh
 ```
+
+Trên H100 80GB, cấu hình mặc định là `batch_size=8` và `grad_accum=4`:
+effective batch = 32, tương đương `batch_size=4, grad_accum=8` trên GPU 32GB.
+Script vẫn giữ gradient checkpointing để an toàn VRAM ở sequence length 1280.
 
 Script dùng **base Qwen/Qwen3.5-9B + LoRA SFT mới**, không nạp GRPO-304.
 Đầu ra mặc định là `Qwen3.5-9B-SFT-Air-Only/final_adapter`. Sau khi SFT xong,
