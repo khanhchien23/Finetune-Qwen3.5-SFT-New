@@ -74,6 +74,8 @@ def run_grpo_on_modal(
     wandb_key: str = "",
     sft_repo: str = "KhanhChien/FineTuneQwen35-9B-New",
     sft_checkpoint: str = "checkpoint-2004",
+    policy_repo: str = "",
+    policy_checkpoint: str = "",
     dataset_repo: str = "KhanhChien/Data-Qwen3.5-SFT-New",
     hub_repo: str = "KhanhChien/GRPO-Qwen35-9B-New",
     epochs: int = 1,
@@ -84,6 +86,7 @@ def run_grpo_on_modal(
     grad_accum: int = 8,
     lr: float = 5e-6,
     kl_beta: float = 0.02,
+    epoch_offset: int = 0,
 ):
     import subprocess
     import sys
@@ -148,7 +151,10 @@ def run_grpo_on_modal(
         print(f"--> [3/4] Đã có sẵn {sft_checkpoint} tại {sft_ckpt_dir}", flush=True)
 
     # 4. Chạy huấn luyện GRPO trực tiếp trên GPU của Modal
-    output_dir = f"/data/outputs/Qwen3.5-9B-GRPO-{sft_checkpoint}"
+    output_tag = policy_checkpoint or sft_checkpoint
+    if epoch_offset:
+        output_tag = f"{output_tag}-epoch{epoch_offset + 1}"
+    output_dir = f"/data/outputs/Qwen3.5-9B-GRPO-{output_tag}"
     os.makedirs(output_dir, exist_ok=True)
 
     cmd = [
@@ -167,7 +173,12 @@ def run_grpo_on_modal(
         "--grad_accum", str(grad_accum),
         "--lr", str(lr),
         "--kl_beta", str(kl_beta),
+        "--epoch_offset", str(epoch_offset),
     ]
+    if policy_repo:
+        cmd += ["--policy_repo", policy_repo]
+    if policy_checkpoint:
+        cmd += ["--policy_checkpoint", policy_checkpoint]
 
     print("--> [4/4] Bắt đầu chạy lệnh GRPO trên Modal GPU:", " ".join(cmd), flush=True)
     subprocess.run(cmd, check=True)
@@ -184,6 +195,8 @@ def main(
     wandb_key: str = "",
     sft_repo: str = "KhanhChien/FineTuneQwen35-9B-New",
     sft_checkpoint: str = "checkpoint-2004",
+    policy_repo: str = "",
+    policy_checkpoint: str = "",
     dataset_repo: str = "KhanhChien/Data-Qwen3.5-SFT-New",
     hub_repo: str = "KhanhChien/GRPO-Qwen35-9B-New",
     epochs: int = 1,
@@ -194,6 +207,7 @@ def main(
     grad_accum: int = 8,
     lr: float = 5e-6,
     kl_beta: float = 0.02,
+    epoch_offset: int = 0,
 ):
     token = hf_token or os.environ.get("HF_TOKEN", "")
     w_key = wandb_key or os.environ.get("WANDB_API_KEY", "")
@@ -208,6 +222,8 @@ def main(
         wandb_key=w_key,
         sft_repo=sft_repo,
         sft_checkpoint=sft_checkpoint,
+        policy_repo=policy_repo,
+        policy_checkpoint=policy_checkpoint,
         dataset_repo=dataset_repo,
         hub_repo=hub_repo,
         epochs=epochs,
@@ -218,4 +234,5 @@ def main(
         grad_accum=grad_accum,
         lr=lr,
         kl_beta=kl_beta,
+        epoch_offset=epoch_offset,
     )

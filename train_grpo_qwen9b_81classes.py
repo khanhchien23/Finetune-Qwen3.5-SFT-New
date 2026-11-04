@@ -154,6 +154,60 @@ def compute_grpo_reward(raw_completion: str, gt_class: str) -> Tuple[float, Dict
     }
 
 
+def append_rollout_log(
+    jsonl_path: Path,
+    text_path: Path,
+    *,
+    global_step: int,
+    sample_idx: int,
+    dataset_size: int,
+    group_index: int,
+    epoch_offset: int,
+    gt_class: str,
+    decoded_list: List[str],
+    rewards: List[float],
+    accs: List[float],
+    fmts: List[float],
+) -> None:
+    """Persist generated thinking/answers before the GRPO update can continue."""
+    epoch = epoch_offset + (sample_idx - 1) // max(1, dataset_size) + 1
+    records = []
+    for generation, raw_text in enumerate(decoded_list):
+        completion = "<think>\n" + raw_text
+        records.append({
+            "epoch": epoch,
+            "global_step": global_step,
+            "sample_idx": sample_idx,
+            "group_index": group_index,
+            "generation": generation,
+            "ground_truth": gt_class,
+            "prediction": extract_answer(completion),
+            "think": extract_think(completion),
+            "raw_output": completion,
+            "reward": rewards[generation],
+            "accuracy_reward": accs[generation],
+            "format_reward": fmts[generation],
+        })
+    jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+    with jsonl_path.open("a", encoding="utf-8") as stream:
+        for record in records:
+            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+        stream.flush()
+    with text_path.open("a", encoding="utf-8") as stream:
+        stream.write(
+            f"\n===== epoch={epoch} global_step={global_step} sample={sample_idx} "
+            f"group={group_index} gt={gt_class} =====\n"
+        )
+        for record in records:
+            stream.write(
+                f"--- generation={record['generation']} reward={record['reward']:.3f} "
+                f"acc={record['accuracy_reward']:.0f} format={record['format_reward']:.0f} "
+                f"prediction={record['prediction']!r} ---\n"
+                f"{record['raw_output']}\n"
+            )
+        stream.flush()
+
+
 # ==============================================================================
 # 3. TẢI DỮ LIỆU PARQUET TỪ HUGGINGFACE VÀ TẢI ADAPTER CHECKPOINT-2004
 # ==============================================================================
@@ -308,6 +362,26 @@ def push_grpo_checkpoint_to_hub(folder: Path, repo_id: str, path_in_repo: str, r
     except Exception as exc:
         print(f"--> [Hub WARN] Không đẩy được lên {repo_id}: {type(exc).__name__}: {exc}", flush=True)
 
+
+def push_rollout_logs_to_hub(out_dir: Path, repo_id: str):
+    """Upload human-readable rollout CoT logs after training finishes."""
+    try:
+        from huggingface_hub import HfApi, create_repo
+        create_repo(repo_id=repo_id, private=True, exist_ok=True)
+        api = HfApi()
+        for filename in ("rollouts.jsonl", "rollouts.log"):
+            path = out_dir / filename
+            if path.is_file():
+                api.upload_file(
+                    path_or_fileobj=str(path),
+                    path_in_repo=f"rollout_logs/{out_dir.name}/{filename}",
+                    repo_id=repo_id,
+                    commit_message=f"Upload GRPO rollout CoT log {filename}",
+                )
+                print(f"--> [Hub] Đã đẩy rollout log: {repo_id}/rollout_logs/{out_dir.name}/{filename}", flush=True)
+    except Exception as exc:
+        print(f"--> [Hub WARN] Không đẩy được rollout logs: {type(exc).__name__}: {exc}", flush=True)
+
 # ==============================================================================
 # 5. VÒNG LẶP HUẤN LUYỆN GRPO CHÍNH
 # ==============================================================================
@@ -318,6 +392,12 @@ def main():
                         help="Repo HuggingFace hoặc thư mục chứa SFT checkpoint-2004")
     parser.add_argument("--sft_checkpoint", type=str, default="checkpoint-2004",
                         help="Tên checkpoint SFT dùng làm điểm khởi đầu (mặc định: checkpoint-2004)")
+    parser.add_argument("--policy_checkpoint", type=str, default="",
+                        help="GRPO adapter khởi đầu cho policy; rỗng = dùng --sft_checkpoint")
+    parser.add_argument("--policy_repo", type=str, default="",
+                        help="HF repo chứa policy checkpoint; rỗng = dùng --sft_repo")
+    parser.add_argument("--ref_checkpoint", type=str, default="",
+                        help="Adapter reference cố định; rỗng = dùng --sft_checkpoint")
     parser.add_argument("--dataset", type=str, default="KhanhChien/Data-Qwen3.5-SFT-New",
                         help="Repo HuggingFace hoặc thư mục Parquet chứa dữ liệu train")
     parser.add_argument("--output_dir", type=str, default="./Qwen3.5-9B-GRPO-ckpt2004")
@@ -346,6 +426,10 @@ def main():
     parser.add_argument("--wandb_run_name", type=str, default="GRPO-ckpt2004",
                         help="Tên run hiển thị trên WandB")
     parser.add_argument("--no_wandb", action="store_true", help="Tắt logging lên WandB")
+    parser.add_argument("--rollout_log_every", type=int, default=1,
+                        help="Ghi CoT mỗi N rollout groups; mặc định 1 (ghi mọi group)")
+    parser.add_argument("--epoch_offset", type=int, default=0,
+                        help="Số epoch đã hoàn tất trước run này, chỉ dùng để ghi log epoch")
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -360,6 +444,12 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     runs_dir = out_dir / "runs" / args.wandb_run_name
     runs_dir.mkdir(parents=True, exist_ok=True)
+    rollout_jsonl = out_dir / "rollouts.jsonl"
+    rollout_text = out_dir / "rollouts.log"
+    if args.rollout_log_every < 1:
+        raise ValueError("--rollout_log_every phải >= 1")
+    print(f"--> [Rollout log] JSONL: {rollout_jsonl} | text: {rollout_text} | "
+          f"every={args.rollout_log_every}", flush=True)
     tb_writer = SummaryWriter(log_dir=str(runs_dir)) if HAS_TB else None
 
     use_wandb = HAS_WANDB and (not args.no_wandb) and bool(os.environ.get("WANDB_API_KEY"))
@@ -374,9 +464,14 @@ def main():
         print(f"--> [TensorBoard] Đang ghi log tại: {runs_dir} (Đặt biến môi trường WANDB_API_KEY nếu muốn bật thêm WandB)", flush=True)
 
     # 1. Tải SFT checkpoint-2004
-    sft_adapter_dir = resolve_sft_checkpoint(
+    ref_adapter_dir = resolve_sft_checkpoint(
         args.sft_repo, args.sft_checkpoint, cache_dir=str(out_dir / "sft_base_cache")
     )
+    policy_name = args.policy_checkpoint or args.sft_checkpoint
+    policy_repo = args.policy_repo or args.sft_repo
+    policy_adapter_dir = (ref_adapter_dir if policy_name == args.sft_checkpoint and policy_repo == args.sft_repo else
+                          resolve_sft_checkpoint(policy_repo, policy_name,
+                                                 cache_dir=str(out_dir / "policy_cache")))
 
     # 2. Tải Processor & Base Model Qwen3.5-9B + gắn SFT Adapter ở chế độ Trainable
     print(f"--> Đang tải Processor & Base Model: {args.model_id} ({dtype})...", flush=True)
@@ -416,9 +511,15 @@ def main():
 
     # Nạp adapter "policy" (trainable) VÀ adapter "ref" (đóng băng ở checkpoint-2004 để tính KL)
     model = PeftModel.from_pretrained(
-        base_model, str(sft_adapter_dir), adapter_name="policy", is_trainable=True
+        base_model, str(policy_adapter_dir), adapter_name="policy", is_trainable=True
     )
-    model.load_adapter(str(sft_adapter_dir), adapter_name="ref", is_trainable=False)
+    ref_name = args.ref_checkpoint or args.sft_checkpoint
+    if ref_name == args.sft_checkpoint:
+        ref_adapter_dir = ref_adapter_dir
+    else:
+        ref_adapter_dir = resolve_sft_checkpoint(args.sft_repo, ref_name,
+                                                  cache_dir=str(out_dir / "ref_cache"))
+    model.load_adapter(str(ref_adapter_dir), adapter_name="ref", is_trainable=False)
     model.set_adapter("policy")
     model.print_trainable_parameters()
 
@@ -449,6 +550,7 @@ def main():
     optimizer.zero_grad()
 
     pbar = tqdm(total=total_samples, desc="GRPO Dataset Progress", unit="img")
+    rollout_group_index = 0
     while sample_idx < total_samples and (args.max_steps <= 0 or global_step < args.max_steps):
         step_loss_sum = 0.0
         step_kl_sum = 0.0
@@ -520,6 +622,23 @@ def main():
                     rewards.append(r_total)
                     accs.append(r_info["acc"])
                     fmts.append(r_info["format"])
+
+                rollout_group_index += 1
+                if rollout_group_index % args.rollout_log_every == 0:
+                    append_rollout_log(
+                        rollout_jsonl,
+                        rollout_text,
+                        global_step=global_step,
+                        sample_idx=sample_idx,
+                        dataset_size=len(dataset),
+                        group_index=rollout_group_index,
+                        epoch_offset=args.epoch_offset,
+                        gt_class=gt_class,
+                        decoded_list=decoded_list,
+                        rewards=rewards,
+                        accs=accs,
+                        fmts=fmts,
+                    )
 
                 rewards_t = torch.tensor(rewards, dtype=torch.float32, device=device)
                 mean_r = rewards_t.mean()
@@ -668,6 +787,8 @@ def main():
         tb_writer.close()
     if use_wandb:
         wandb.finish()
+    if args.hub_repo:
+        push_rollout_logs_to_hub(out_dir, args.hub_repo)
     print(f"=== HOÀN TẤT HUẤN LUYỆN GRPO TOÀN BỘ DATASET ({sample_idx:,} ẢNH, {global_step} STEPS) ===", flush=True)
 
 

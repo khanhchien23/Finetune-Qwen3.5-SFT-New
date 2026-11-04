@@ -118,3 +118,38 @@ Có thể dùng endpoint OpenAI-compatible khác bằng `--base-url`, ví dụ:
 ```powershell
 python rewrite_air_cot_api.py ... --base-url https://openrouter.ai/api/v1 --model openai/gpt-4o-mini
 ```
+
+## GRPO epoch 2 với rollout CoT log
+
+GRPO giữ nguyên cấu hình cũ:
+
+```text
+H100, batch_size=16, num_generations=4, grad_accum=8,
+lr=5e-6, kl_beta=0.02, temperature=0.8, max_new_tokens=384
+```
+
+Để chạy tiếp từ policy GRPO `checkpoint-grpo-304`, trong khi reference KL vẫn
+là SFT `checkpoint-2004`, chạy từ CMD:
+
+```cmd
+cd /d D:\du_lieu_that\up_github_1
+modal run --detach modal_grpo_qwen9b.py --hf-token hf_xxx --sft-repo KhanhChien/FineTuneQwen35-9B-New --sft-checkpoint checkpoint-2004 --policy-repo KhanhChien/GRPO-Qwen35-9B-New --policy-checkpoint checkpoint-grpo-304 --dataset-repo KhanhChien/Data-Qwen3.5-SFT-New --hub-repo KhanhChien/GRPO-Qwen35-9B-New --epochs 1 --batch-size 16 --num-generations 4 --grad-accum 8 --lr 5e-6 --kl-beta 0.02 --save-steps 50 --epoch-offset 1 --rollout-log-every 1
+```
+
+Log được ghi mỗi rollout group vào:
+
+```text
+rollouts.log       # dễ đọc bằng mắt: think, answer, reward
+rollouts.jsonl     # một dòng cho mỗi generation, dễ phân tích bằng code
+```
+
+Sau khi train, hai file được upload vào repo GRPO dưới:
+
+```text
+rollout_logs/Qwen3.5-9B-GRPO-checkpoint-grpo-304-epoch2/rollouts.log
+rollout_logs/Qwen3.5-9B-GRPO-checkpoint-grpo-304-epoch2/rollouts.jsonl
+```
+
+Nếu tên checkpoint epoch 1 khác `checkpoint-grpo-304`, thay đúng giá trị của
+`--policy-checkpoint`. `--epochs 1 --epoch-offset 1` là chạy thêm epoch 2,
+không phải chạy lại hai epoch từ SFT.
