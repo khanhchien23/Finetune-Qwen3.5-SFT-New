@@ -60,8 +60,11 @@ mắt. Có thể thử 5 dòng mỗi split bằng `--limit 5`.
 ## Sinh lại prompt và CoT Air-only bằng API
 
 File `rewrite_air_cot_api.py` đọc ảnh thật từ Parquet và gọi vision API để
-rewrite `assistant_cot`. File gốc không bị sửa; output là dataset JSONL mới có
-prompt Air-only và CoT mới. Script tự resume theo `id` nếu bị ngắt.
+rewrite `assistant_cot`. Đây là **minimal rewrite**: giữ nguyên văn phong,
+4 mục reasoning và format của prompt 81 lớp; chỉ đổi inventory sang 30 class
+Air-only, bỏ Grd/Sea khỏi phần phân loại và loại các tham chiếu non-Air. File
+gốc không bị sửa; output là dataset JSONL mới. Script tự resume theo `id` nếu
+bị ngắt.
 
 Ví dụ dùng OpenAI API, chạy thử 5 dòng mỗi split trước:
 

@@ -39,26 +39,24 @@ AIR_CLASSES = [
     "Air.Su22", "Air.Su27", "Air.T6Texan", "Air.Yak130", "Air.Yak52", "Air.Z8",
 ]
 AIR_CLASS_TEXT = ", ".join(AIR_CLASSES)
-SYSTEM_PROMPT = f"""You are an expert analyst specializing in fine-grained military aircraft recognition.
+SYSTEM_PROMPT = f"""You are an expert military analyst specializing in Fine-Grained Military Vehicle Recognition.
+Your task is to inspect the provided image and classify the military platform into EXACTLY ONE of the following 30 Air-only target classes:
 
-Identify exactly one aircraft class from this 30-label Air-only inventory:
 {AIR_CLASS_TEXT}
 
-Use only visual evidence visible in the image. Do not invent markings, variants, operators, missions, or details that cannot be observed. Reason in four stages:
-1. Viewpoint: viewing angle, orientation, crop, visibility, and occlusion.
-2. Aircraft Type: fixed-wing aircraft or helicopter and broad configuration.
-3. Visual Features: visible fuselage, wings, engines, rotors, landing gear, tail, cockpit, canopy, pylons, or stabilizers.
-4. Candidate Comparison and Conclusion: compare only plausible labels from the Air-only inventory and select the best-supported label.
+Follow this structured reasoning process before making your final decision:
+1. Viewpoint & Environment: Identify the camera viewing angle and operational setting.
+2. Coarse Category: Determine the primary aircraft domain (Air) and general aircraft type.
+3. Fine-Grained Visual Features: Describe the distinctive physical characteristics strictly visible in the image.
+4. Disambiguation & Conclusion: Rule out visually similar aircraft types based on observed features and select the exact target class name.
 
-The final output must use exactly this format:
+Required output format:
 <think>
-1. Viewpoint: ...
-2. Aircraft Type: ...
-3. Visual Features: ...
-4. Candidate Comparison and Conclusion: ...
+Write your step-by-step visual analysis here...
 </think>
-<answer>Air.X</answer>"""
-USER_PROMPT = """Inspect the aircraft in the image and rewrite the supplied old reasoning for the Air-only 30-class task. Preserve the correct target label, remove references to the old 81-class inventory and non-aircraft categories, and use only evidence supported by the image. Return JSON with exactly one field named assistant_cot."""
+<answer>Exact_Air_Class_Name</answer>"""
+USER_PROMPT = """Examine the morphological features and viewing geometry of the military platform shown here. Write your step-by-step reasoning in <think>...</think> and state the final class from the 30 Air-only categories in <answer>...</answer>."""
+REWRITE_INSTRUCTION = """Rewrite the supplied reasoning for the Air-only 30-class task while preserving the original reasoning format and writing style. Keep the four original sections: Viewpoint & Environment, Coarse Category, Fine-Grained Visual Features, and Disambiguation & Conclusion. Preserve the correct target label exactly. Remove only references to the old 81-class inventory and non-Air categories such as ground vehicles or naval vessels. Do not invent visual details that are unsupported by the image. Return JSON with exactly one field named assistant_cot."""
 
 
 def image_bytes(image):
@@ -95,7 +93,7 @@ def api_call(api_key, base_url, model, image, old_cot, label, timeout, retries):
     raw, filename = image_bytes(image)
     mime = "image/jpeg" if str(filename).lower().endswith((".jpg", ".jpeg")) else "image/png"
     image_data = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
-    prompt = f"{USER_PROMPT}\n\nGround-truth label (must be preserved exactly): {label}\n\nOld CoT:\n{old_cot}"
+    prompt = f"{REWRITE_INSTRUCTION}\n\nGround-truth label (must be preserved exactly): {label}\n\nOld CoT:\n{old_cot}"
     payload = {
         "model": model,
         "temperature": 0.2,
@@ -174,11 +172,11 @@ def process_split(dataset_dir, split, output, args, api_key):
             "row_index": index,
             "gt_class": label,
             "system_prompt": SYSTEM_PROMPT,
-            "user_prompt": "Identify the aircraft shown in the image. Use only visible evidence and follow the required four-stage reasoning format.",
+            "user_prompt": USER_PROMPT,
             "assistant_cot": cot,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": "Identify the aircraft shown in the image. Use only visible evidence and follow the required four-stage reasoning format."},
+                {"role": "user", "content": USER_PROMPT},
                 {"role": "assistant", "content": cot},
             ],
             "image": {"path": row.get("image", {}).get("path", "") if isinstance(row.get("image"), dict) else ""},
