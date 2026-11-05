@@ -131,25 +131,36 @@ def load_model(adapter):
     return processor, PeftModel.from_pretrained(base, str(adapter), is_trainable=False).eval()
 
 
-def infer(row, processor, model, max_new_tokens):
+def infer_batch(rows, processor, model, max_new_tokens):
+    """Generate one response per image in a real padded inference batch."""
     started = time.monotonic()
-    if "path" in row:
-        image = Image.open(row["path"]).convert("RGB")
-    else:
-        import io
-        image = Image.open(io.BytesIO(row["image_bytes"])).convert("RGB")
-    messages = [{"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
-                {"role": "user", "content": [{"type": "image", "image": image},
-                                                   {"type": "text", "text": USER_PROMPT}]}]
-    prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=True)
-    inputs = processor(text=[prompt], images=[image], return_tensors="pt").to("cuda:0")
-    with torch.inference_mode():
-        output = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False,
-                                pad_token_id=processor.tokenizer.pad_token_id)
-    new_ids = output[:, inputs["input_ids"].shape[1]:]
-    raw = "<think>\n" + processor.batch_decode(new_ids, skip_special_tokens=False)[0]
-    image.close()
-    return parse_answer(raw), raw, int(new_ids.shape[1]), time.monotonic() - started
+    images, prompts = [], []
+    try:
+        for row in rows:
+            if "path" in row:
+                image = Image.open(row["path"]).convert("RGB")
+            else:
+                import io
+                image = Image.open(io.BytesIO(row["image_bytes"])).convert("RGB")
+            messages = [{"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
+                        {"role": "user", "content": [{"type": "image", "image": image},
+                                                           {"type": "text", "text": USER_PROMPT}]}]
+            prompts.append(processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True, enable_thinking=True))
+            images.append(image)
+        inputs = processor(text=prompts, images=images, padding=True, return_tensors="pt").to("cuda:0")
+        with torch.inference_mode():
+            output = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False,
+                                    pad_token_id=processor.tokenizer.pad_token_id)
+        # With left padding, every row has the same input width after padding.
+        new_ids = output[:, inputs["input_ids"].shape[1]:]
+        decoded = processor.batch_decode(new_ids, skip_special_tokens=False)
+        elapsed = time.monotonic() - started
+        return [(parse_answer(raw := "<think>\n" + text), raw, int(ids.shape[0]), elapsed)
+                for ids, text in zip(new_ids, decoded)]
+    finally:
+        for image in images:
+            image.close()
 
 
 def main():
@@ -159,11 +170,13 @@ def main():
     parser.add_argument("--checkpoint", default="", help="HF checkpoint subdirectory, e.g. epoch-2 checkpoint")
     parser.add_argument("--output", type=Path, default=Path("epoch2_predictions.csv"))
     parser.add_argument("--max-new-tokens", type=int, default=384)
+    parser.add_argument("--batch-size", type=int, default=32,
+                        help="Images per generation batch; 32 is a starting point for an 80GB GPU")
     parser.add_argument("--limit", type=int, default=0, help="0=all")
     parser.add_argument("--no-resume", action="store_true")
     args = parser.parse_args()
-    if args.max_new_tokens < 1 or args.limit < 0:
-        parser.error("--max-new-tokens must be positive and --limit must be >= 0")
+    if args.max_new_tokens < 1 or args.limit < 0 or args.batch_size < 1:
+        parser.error("--max-new-tokens/--batch-size must be positive and --limit must be >= 0")
     rows = items_from_data(args.data.resolve())
     rows = rows[:args.limit] if args.limit else rows
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -183,17 +196,25 @@ def main():
         writer = csv.DictWriter(csv_file, fieldnames=FIELDS)
         if csv_file.tell() == 0:
             writer.writeheader()
-        for index, row in enumerate(remaining, 1):
-            prediction, raw, tokens, seconds = infer(row, processor, model, args.max_new_tokens)
-            gt = row.get("ground_truth", "")
-            correct = prediction.casefold() == gt.casefold() if gt else ""
-            result = {"file_name": row["file_name"], "ground_truth": gt, "prediction": prediction,
-                      "correct": correct, "generated_tokens": tokens, "seconds": round(seconds, 3), "raw_output": raw}
-            writer.writerow(result); csv_file.flush()
-            json_file.write(json.dumps(result, ensure_ascii=False) + "\n"); json_file.flush()
-            log_file.write(f"{'='*80}\nFile: {row['file_name']}\nGround truth: {gt}\nPrediction: {prediction}\nCorrect: {correct}\n{raw}\n")
-            log_file.flush()
-            print(f"[{index}/{len(remaining)}] {row['file_name']} -> {prediction or '(no answer)'} | gt={gt} | correct={correct}", flush=True)
+        for offset in range(0, len(remaining), args.batch_size):
+            batch = remaining[offset:offset + args.batch_size]
+            try:
+                results = infer_batch(batch, processor, model, args.max_new_tokens)
+            except torch.cuda.OutOfMemoryError as exc:
+                torch.cuda.empty_cache()
+                raise RuntimeError(
+                    f"CUDA OOM with batch_size={len(batch)}. Re-run with --batch-size 16 or 8."
+                ) from exc
+            for index, (row, (prediction, raw, tokens, seconds)) in enumerate(zip(batch, results), offset + 1):
+                gt = row.get("ground_truth", "")
+                correct = prediction.casefold() == gt.casefold() if gt else ""
+                result = {"file_name": row["file_name"], "ground_truth": gt, "prediction": prediction,
+                          "correct": correct, "generated_tokens": tokens, "seconds": round(seconds, 3), "raw_output": raw}
+                writer.writerow(result); csv_file.flush()
+                json_file.write(json.dumps(result, ensure_ascii=False) + "\n"); json_file.flush()
+                log_file.write(f"{'='*80}\nFile: {row['file_name']}\nGround truth: {gt}\nPrediction: {prediction}\nCorrect: {correct}\n{raw}\n")
+                log_file.flush()
+                print(f"[{index}/{len(remaining)}] {row['file_name']} -> {prediction or '(no answer)'} | gt={gt} | correct={correct}", flush=True)
     print(f"Saved: {args.output}, {log_path}, {jsonl_path}")
 
 
