@@ -37,7 +37,12 @@ Follow this structured visual reasoning process before making your final decisio
 3. Fine-Grained Visual Features: Describe only visible structural features such as fuselage, cockpit, wings, engines, rotors, landing gear, tail assembly, and external stores.
 4. Disambiguation & Conclusion: Compare only visually plausible Air candidates and select the exact target class name.
 
-Do not use metadata, the filename, the ground-truth label, or unsupported facts. Do not write any Air.* class label in Steps 1, 2, or 3; class labels may appear only in Step 4 and the final answer.
+Strict visual-evidence rules:
+- Do not use image metadata, the filename, folder names, the ground-truth label, or any external knowledge about the sample.
+- Do not rely on paint color, camouflage color, lighting, shadows, national flags, insignia, logos, brands, markings, text, digits, serial numbers, tail numbers, registration numbers, or watermarks.
+- Do not identify an aircraft from a readable name, number, logo, or country/unit marking. Use only stable morphology: silhouette, proportions, cockpit and canopy geometry, wing and tail planform, engine/rotor arrangement, landing gear, pylons, and other clearly visible structural features.
+- If a feature is occluded, blurred, cropped, or not visible, do not invent it or treat it as evidence.
+- Do not write any Air.* class label in Steps 1, 2, or 3; class labels may appear only in Step 4 and the final answer.
 
 Required output format:
 <think>
@@ -55,8 +60,13 @@ REWRITE_INSTRUCTION = (
         "Viewpoint & Environment, Aircraft Type, Fine-Grained Visual Features, and Disambiguation & Conclusion. "
         "Preserve the correct target label exactly. Remove references to the old 81-class inventory and any "
         "non-Air categories. Do not invent visual details unsupported by the image. In Steps 1, 2, and 3, never write any Air.* class label, "
-    "the ground-truth label, or meta phrases such as target classification, validated, "
+        "the ground-truth label, or meta phrases such as target classification, validated, "
     "standard processing, or confirmed. Mention candidate class labels only in Step 4. "
+        "Do not use paint color, camouflage color, lighting, shadows, flags, insignia, logos, brands, "
+        "markings, readable text, digits, serial numbers, tail numbers, registration numbers, watermarks, "
+        "metadata, filenames, folder names, or country/unit markings as identification evidence. "
+        "Use only clearly visible aircraft morphology; if a feature is unclear, state that it is not visible "
+        "rather than inventing it. "
     "Output ONLY the exact <think>...</think>\\n<answer>...</answer> block."
 )
 
@@ -105,7 +115,10 @@ def validate_cot(cot, label):
     forbidden = (
         "grd.", "sea.", "81 target", "81 classes", "ground vehicle", "naval vessel",
         "target classification", "ground-truth", "standard processing", "validated",
-        "validation passed", "jumping directly", "template applied",
+        "validation passed", "jumping directly", "template applied", "paint color", "paint colour",
+        "camouflage color", "camouflage colour", "national flag", "insignia", "logo", "brand",
+        "serial number", "tail number", "registration number", "watermark", "readable text",
+        "folder name", "filename", "file name", "metadata",
     )
     found = [word for word in forbidden if word in cot.lower()]
     return (False, f"forbidden references {found}") if found else (True, "OK")
