@@ -127,8 +127,15 @@ def load_model(adapter):
     except (TypeError, ValueError):
         processor = AutoProcessor.from_pretrained(processor_source, min_pixels=MIN_PIXELS, max_pixels=MAX_PIXELS, trust_remote_code=True)
     processor.tokenizer.padding_side = "left"
-    base = AutoModelForImageTextToText.from_pretrained(MODEL_ID, dtype=dtype, device_map="auto", trust_remote_code=True)
-    return processor, PeftModel.from_pretrained(base, str(adapter), is_trainable=False).eval()
+    # An 80GB GPU can hold Qwen3.5-9B in BF16. Avoid device_map="auto" here:
+    # Accelerate may leave meta tensors, and older PEFT versions then cannot
+    # inject the LoRA weights into Qwen MTP modules.
+    print(f"Loading {MODEL_ID} ({dtype}) entirely on cuda:0 + adapter {adapter}", flush=True)
+    base = AutoModelForImageTextToText.from_pretrained(
+        MODEL_ID, dtype=dtype, device_map={"": 0}, trust_remote_code=True,
+    )
+    model = PeftModel.from_pretrained(base, str(adapter), is_trainable=False).eval()
+    return processor, model
 
 
 def infer_batch(rows, processor, model, max_new_tokens):
