@@ -26,16 +26,18 @@ AIR_CLASSES = [
 ]
 AIR_CLASS_TEXT = ", ".join(AIR_CLASSES)
 
-SYSTEM_PROMPT = f"""You are an expert military analyst specializing in Fine-Grained Military Vehicle Recognition.
-Your task is to inspect the provided image and classify the military platform into EXACTLY ONE of the following 30 Air-only target classes:
+SYSTEM_PROMPT = f"""You are an expert military aircraft analyst specializing in fine-grained aircraft recognition.
+Your task is to inspect the provided image and classify the aircraft into EXACTLY ONE of the following 30 Air-only target classes:
 
 {AIR_CLASS_TEXT}
 
-Follow this structured reasoning process before making your final decision:
-1. Viewpoint & Environment: Identify the camera viewing angle and operational setting.
-2. Coarse Category: Determine the primary aircraft domain (Air) and general aircraft type.
-3. Fine-Grained Visual Features: Describe the distinctive physical characteristics strictly visible in the image.
-4. Disambiguation & Conclusion: Rule out visually similar aircraft types based on observed features and select the exact target class name.
+Follow this structured visual reasoning process before making your final decision:
+1. Viewpoint & Environment: Describe the camera angle, aircraft orientation, visible top/side/underside, and operational setting.
+2. Aircraft Type: Identify the broad aircraft type, such as fighter, bomber, transport aircraft, helicopter, or trainer, using only visible evidence.
+3. Fine-Grained Visual Features: Describe only visible structural features such as fuselage, cockpit, wings, engines, rotors, landing gear, tail assembly, and external stores.
+4. Disambiguation & Conclusion: Compare only visually plausible Air candidates and select the exact target class name.
+
+Do not use metadata, the filename, the ground-truth label, or unsupported facts. Do not write any Air.* class label in Steps 1, 2, or 3; class labels may appear only in Step 4 and the final answer.
 
 Required output format:
 <think>
@@ -43,17 +45,16 @@ Write your step-by-step visual analysis here...
 </think>
 <answer>Exact_Air_Class_Name</answer>"""
 USER_PROMPT = (
-    "Examine the morphological features and viewing geometry of the military platform shown here. "
-    "Write your step-by-step reasoning in <think>...</think> and state the final class from "
-    "the 30 Air-only categories in <answer>...</answer>."
+    "Inspect this military aircraft carefully. Provide a structured four-step visual analysis "
+    "inside <think>...</think> and conclude with exactly one class from the 30 Air-only "
+    "categories inside <answer>...</answer>."
 )
 REWRITE_INSTRUCTION = (
-    "Rewrite the supplied reasoning for the Air-only 30-class task while preserving the original "
-    "reasoning format and writing style. Keep the four original sections: Viewpoint & Environment, "
-    "Coarse Category, Fine-Grained Visual Features, and Disambiguation & Conclusion. Preserve the "
-    "correct target label exactly. Remove only references to the old 81-class inventory and non-Air "
-    "categories such as ground vehicles or naval vessels. Do not invent visual details unsupported "
-    "by the image. In Steps 1, 2, and 3, never write any Air.* class label, "
+        "Rewrite the supplied reasoning for the Air-only 30-class aircraft task while preserving the original "
+        "visual evidence, reasoning quality, format, and writing style. Keep exactly four sections: "
+        "Viewpoint & Environment, Aircraft Type, Fine-Grained Visual Features, and Disambiguation & Conclusion. "
+        "Preserve the correct target label exactly. Remove references to the old 81-class inventory and any "
+        "non-Air categories. Do not invent visual details unsupported by the image. In Steps 1, 2, and 3, never write any Air.* class label, "
     "the ground-truth label, or meta phrases such as target classification, validated, "
     "standard processing, or confirmed. Mention candidate class labels only in Step 4. "
     "Output ONLY the exact <think>...</think>\\n<answer>...</answer> block."
@@ -91,7 +92,7 @@ def validate_cot(cot, label):
     think_body = re.search(r"<think>\s*(.*?)\s*</think>", cot, re.I | re.S).group(1)
     headings = [
         re.search(r"1\.\s*Viewpoint(?:\s*&\s*Environment)?\s*:", think_body, re.I),
-        re.search(r"2\.\s*Coarse Category\s*:", think_body, re.I),
+        re.search(r"2\.\s*(?:Aircraft Type|Coarse Category)\s*:", think_body, re.I),
         re.search(r"3\.\s*Fine-Grained Visual Features\s*:", think_body, re.I),
         re.search(r"4\.\s*Disambiguation\s*&\s*Conclusion\s*:", think_body, re.I),
     ]
